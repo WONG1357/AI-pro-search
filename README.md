@@ -36,7 +36,7 @@ python -m pipeline.pipeline
 Optional arguments:
 
 ```bash
-python -m pipeline.pipeline --keywords trocar xcel kii --years 2024 2025 2026
+python -m pipeline.pipeline --keywords Xcel Versaport VersaOne Kii "Apple Trocar" "Lina Port" Trocar leak fixation puncture death injury infection blade "pyramidal tip" --years 2024 2025 2026
 ```
 
 Exports are written to `data/exports/`:

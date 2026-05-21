@@ -72,7 +72,6 @@ class MhraFscaConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
-                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
                 debug=bool(kwargs.get("debug", False)),
                 session=kwargs.get("session"),
             )
@@ -189,7 +188,6 @@ def fetch_mhra_fsca_direct(
     client_config: MhraFscaClientConfig | None = None,
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
-    max_records: int | None = None,
     debug: bool = False,
     session: requests.Session | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -233,11 +231,6 @@ def fetch_mhra_fsca_direct(
                     if key not in seen_records:
                         normalized.append(record)
                         seen_records.add(key)
-                    if max_records and len(normalized) >= max_records:
-                        warnings.append(f"Stopped at max_records={max_records}")
-                        break
-                if max_records and len(normalized) >= max_records:
-                    break
             if progress_reporter:
                 progress_reporter.update_source(
                     SOURCE_NAME,
@@ -247,8 +240,6 @@ def fetch_mhra_fsca_direct(
                     stage="Fetching MHRA FSNs",
                     message=f"keyword={keyword} page={page} weekly_pages={len(result_pages)} records={len(normalized)}",
                 )
-            if max_records and len(normalized) >= max_records:
-                break
             if max_pages and page >= max_pages:
                 warnings.append(f"Stopped at max_pages={max_pages} for keyword={keyword}")
                 break

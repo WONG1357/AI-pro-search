@@ -60,7 +60,6 @@ class HealthCanadaMdiConnector(BaseSourceConnector):
             config.timeout = float(kwargs["request_timeout"])
         if kwargs.get("page_size"):
             config.page_size = int(kwargs["page_size"])
-        max_records = kwargs.get("max_records")
         max_pages = kwargs.get("max_pages")
         terms = _merge_terms(keywords, components, accident_terms)
 
@@ -70,7 +69,6 @@ class HealthCanadaMdiConnector(BaseSourceConnector):
                 years=years,
                 client_config=config,
                 progress_reporter=progress_reporter,
-                max_records=int(max_records) if max_records else None,
                 max_pages=int(max_pages) if max_pages else None,
                 debug=bool(kwargs.get("debug", False)),
             )
@@ -97,7 +95,6 @@ def fetch_health_canada_mdi_direct(
     client_config: HealthCanadaMdiClientConfig | None = None,
     session: requests.Session | None = None,
     progress_reporter: ProgressReporter | None = None,
-    max_records: int | None = None,
     max_pages: int | None = None,
     debug: bool = False,
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -164,10 +161,6 @@ def fetch_health_canada_mdi_direct(
                 )
 
             if not page_records:
-                break
-            if max_records and len(raw_records) >= max_records:
-                raw_records = raw_records[:max_records]
-                warnings.append(f"Stopped at max_records={max_records}")
                 break
             if total_filtered is not None and start + len(page_records) >= int(total_filtered):
                 break

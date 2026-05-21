@@ -42,7 +42,6 @@ def run_pipeline(
     progress_reporter = kwargs.pop("progress_reporter", None) or ProgressReporter(selected_sources)
     request_timeout = global_options.get("request_timeout")
     max_pages = global_options.get("max_pages")
-    max_records = global_options.get("max_records")
     debug = bool(global_options.get("debug", False))
 
     if mhra_csv_path is not None:
@@ -71,7 +70,6 @@ def run_pipeline(
             progress_reporter=progress_reporter,
             request_timeout=request_timeout,
             max_pages=max_pages,
-            max_records=max_records,
             debug=debug,
             **source_options.get(source_id, {}),
         )

@@ -69,7 +69,6 @@ class BfarmRecallConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
-                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
                 debug=bool(kwargs.get("debug", False)),
                 session=kwargs.get("session"),
             )
@@ -96,7 +95,6 @@ def fetch_bfarm_recalls_direct(
     client_config: BfarmClientConfig | None = None,
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
-    max_records: int | None = None,
     debug: bool = False,
     session: requests.Session | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -104,15 +102,22 @@ def fetch_bfarm_recalls_direct(
     config = client_config or BfarmClientConfig()
     session = session or requests.Session()
     warnings: list[str] = []
-    terms = _merge_terms(keywords, None, None)
+    terms = _bfarm_search_terms(_merge_terms(keywords, None, None))
     records_by_key: dict[str, dict[str, Any]] = {}
     desired_years = set(int(year) for year in years)
     total_steps = max(1, len(terms) * 2)
     step = 0
 
     for keyword in terms or [""]:
+        if _has_records_for_all_desired_years(records_by_key, desired_years):
+            warnings.append("BfArM stopped after selected-year records were found; skipped remaining broad terms to avoid rate limiting.")
+            break
         step += 1
-        initial_response = fetch_bfarm_search_page(keyword, session=session, client_config=config, debug=debug)
+        try:
+            initial_response = fetch_bfarm_search_page(keyword, session=session, client_config=config, debug=debug)
+        except RuntimeError as exc:
+            warnings.append(str(exc))
+            continue
         period_links = extract_bfarm_period_links(initial_response.text, initial_response.url)
         selected_links = [
             link
@@ -133,10 +138,14 @@ def fetch_bfarm_recalls_direct(
 
         for link in selected_links:
             step += 1
-            response = fetch_bfarm_url(link["url"], session=session, client_config=config, debug=debug)
+            try:
+                response = fetch_bfarm_url(link["url"], session=session, client_config=config, debug=debug)
+            except RuntimeError as exc:
+                warnings.append(str(exc))
+                continue
             records = parse_bfarm_results(response.text, response.url)
             records = [record for record in records if _is_medical_device_customer_information(record)]
-            _add_bfarm_records(records, records_by_key, desired_years, max_records)
+            _add_bfarm_records(records, records_by_key, desired_years)
             if progress_reporter:
                 progress_reporter.update_source(
                     SOURCE_NAME,
@@ -146,17 +155,23 @@ def fetch_bfarm_recalls_direct(
                     stage="Fetching BfArM period results",
                     message=f"keyword={keyword} period={link['label']} records={len(records)}",
                 )
-            if max_records and len(records_by_key) >= max_records:
-                warnings.append(f"Stopped at max_records={max_records}")
-                break
-        if max_records and len(records_by_key) >= max_records:
-            break
 
     normalized = list(records_by_key.values())
     if progress_reporter:
         progress_reporter.complete_source(SOURCE_NAME, records_fetched=len(normalized), message="BfArM completed")
     warnings.append(f"bfarm_records={len(normalized)}")
     return ensure_unified_columns(pd.DataFrame(normalized)), warnings
+
+
+def _has_records_for_all_desired_years(records_by_key: dict[str, dict[str, Any]], desired_years: set[int]) -> bool:
+    if not desired_years or not records_by_key:
+        return False
+    found_years = {
+        int(record["year"])
+        for record in records_by_key.values()
+        if record.get("year") is not None
+    }
+    return desired_years.issubset(found_years)
 
 
 def fetch_bfarm_search_page(
@@ -341,7 +356,6 @@ def _add_bfarm_records(
     records: list[dict[str, Any]],
     records_by_key: dict[str, dict[str, Any]],
     desired_years: set[int],
-    max_records: int | None,
 ) -> None:
     for raw in records:
         rec = normalize_bfarm_record(raw)
@@ -352,8 +366,6 @@ def _add_bfarm_records(
         existing = records_by_key.get(key)
         if existing is None or _is_english_record(rec) and not _is_english_record(existing):
             records_by_key[key] = rec
-        if max_records and len(records_by_key) >= max_records:
-            break
 
 
 def _matches_keywords(record: dict[str, Any], keywords: list[str]) -> bool:
@@ -431,6 +443,35 @@ def _merge_terms(keywords: list[str], components: list[str] | None, accident_ter
             seen.add(term.lower())
             terms.append(term)
     return terms
+
+
+def _bfarm_search_terms(terms: list[str]) -> list[str]:
+    """Use focused BfArM product terms to avoid rate limiting on broad incident words."""
+    broad_terms = {
+        "leak",
+        "fixation",
+        "puncture",
+        "death",
+        "injury",
+        "infection",
+        "blade",
+        "pyramidal tip",
+    }
+    focused = [term for term in terms if term.lower() not in broad_terms]
+    if any(term.lower() == "trocar" for term in focused):
+        return ["Trocar"]
+    return _dedupe_terms(focused or terms)
+
+
+def _dedupe_terms(terms: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        key = term.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(term)
+    return result
 
 
 def _stable_id(*parts: str) -> str:

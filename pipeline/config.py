@@ -55,7 +55,23 @@ MHRA_FSCA_USER_AGENT = os.getenv(
     "Mozilla/5.0 (compatible; Codex MHRA FSN Connector)",
 ).strip()
 
-DEFAULT_KEYWORDS = ["trocar", "xcel", "kii"]
+DEFAULT_KEYWORDS = [
+    "Xcel",
+    "Versaport",
+    "VersaOne",
+    "Kii",
+    "Apple Trocar",
+    "Lina Port",
+    "Trocar",
+    "leak",
+    "fixation",
+    "puncture",
+    "death",
+    "injury",
+    "infection",
+    "blade",
+    "pyramidal tip",
+]
 DEFAULT_TARGET_YEARS = [2024, 2025, 2026]
 
 UNIFIED_COLUMNS = [

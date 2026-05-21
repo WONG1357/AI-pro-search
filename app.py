@@ -19,13 +19,11 @@ from pipeline.sources.tga_daen import build_tga_date_range
 
 
 PAGE_TITLE = "Medical Device Incident Search Platform"
-APP_STATE_VERSION = "2026-05-20-bfarm-v1"
-DEFAULT_TROCAR_KEYWORDS = "trocar, xcel, kii"
+APP_STATE_VERSION = "2026-05-21-no-record-limit-v1"
+DEFAULT_TROCAR_KEYWORDS = "Xcel, Versaport, VersaOne, Kii, Apple Trocar, Lina Port, Trocar, leak, fixation, puncture, death, injury, infection, blade, pyramidal tip"
 YEAR_OPTIONS = list(range(2020, 2027))
 DEFAULT_YEARS = [2024, 2025, 2026]
 DEFAULT_REQUEST_TIMEOUT = 60
-DEFAULT_MAX_PAGES = 100
-DEFAULT_MAX_RECORDS = 5000
 PRIMARY_COLUMNS = [
     "source",
     "event_id",
@@ -106,8 +104,7 @@ def render_sidebar() -> dict[str, object]:
                 tga_csv_file = st.file_uploader("TGA DAEN CSV", type=["csv"])
         with st.expander("Advanced settings", expanded=False):
             request_timeout = st.number_input("Request timeout (sec)", min_value=5, max_value=600, value=DEFAULT_REQUEST_TIMEOUT)
-            max_pages = st.number_input("Max pages per source", min_value=1, max_value=5000, value=DEFAULT_MAX_PAGES)
-            max_records = st.number_input("Max records per source", min_value=1, max_value=500000, value=DEFAULT_MAX_RECORDS)
+            max_pages_input = st.number_input("Max pages per source (0 = no limit)", min_value=0, max_value=5000, value=0)
             debug_logs = st.checkbox("Enable debug logs", value=False)
         run_search = st.button("Run Search", type="primary", use_container_width=True)
 
@@ -121,8 +118,7 @@ def render_sidebar() -> dict[str, object]:
         "tga_start_date": tga_start_date,
         "tga_end_date": tga_end_date,
         "request_timeout": request_timeout,
-        "max_pages": max_pages,
-        "max_records": max_records,
+        "max_pages": int(max_pages_input) if max_pages_input else None,
         "debug_logs": debug_logs,
         "run_search": run_search,
     }
@@ -156,7 +152,6 @@ def execute_search(search_state: dict[str, object]) -> None:
     source_options["_global"] = {
         "request_timeout": search_state.get("request_timeout"),
         "max_pages": search_state.get("max_pages"),
-        "max_records": search_state.get("max_records"),
         "debug": search_state.get("debug_logs"),
     }
 
@@ -565,7 +560,8 @@ def split_source_audit_messages(warnings: pd.DataFrame) -> tuple[pd.DataFrame, p
         r"expected_report_count=\d+|print_report_url=.*|content_type=.*|"
         r"pdf_text_length=\d+|max_pages=\d+|"
         r"health_canada_mdi_raw_records=\d+|health_canada_mdi_filtered_records=\d+|"
-        r"eudamed_records=\d+|swissmedic_fsca_records=\d+|mhra_fsca_records=\d+)$"
+        r"eudamed_records=\d+|swissmedic_fsca_records=\d+|mhra_fsca_records=\d+|"
+        r"bfarm_records=\d+)$"
     )
     messages = warnings["warning_message"].fillna("").astype(str)
     audit_mask = messages.str.match(audit_pattern)

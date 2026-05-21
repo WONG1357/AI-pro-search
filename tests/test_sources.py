@@ -272,7 +272,7 @@ def test_bfarm_direct_fetch_mock_http() -> None:
     config = BfarmClientConfig(base_url="https://www.bfarm.de", search_path="/SiteGlobals/Forms/Suche/EN/Expertensuche_Formular.html")
     df, warnings = fetch_bfarm_recalls_direct(["trocar"], [2024], client_config=config, session=session)
     assert len(df) == 1
-    assert session.calls[0]["params"]["templateQueryString"] == "trocar"
+    assert session.calls[0]["params"]["templateQueryString"] == "Trocar"
     assert "dateOfIssue_dt" not in session.calls[0]["params"]
     assert "dateOfIssue_dt=penultimateyear" in session.calls[1]["url"]
     assert warnings

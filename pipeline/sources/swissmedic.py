@@ -83,7 +83,6 @@ class SwissmedicFscaConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
-                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
                 debug=bool(kwargs.get("debug", False)),
                 session=kwargs.get("session"),
             )
@@ -197,7 +196,6 @@ def fetch_swissmedic_fsca_direct(
     client_config: SwissmedicFscaClientConfig | None = None,
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
-    max_records: int | None = None,
     debug: bool = False,
     session: requests.Session | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -255,10 +253,6 @@ def fetch_swissmedic_fsca_direct(
                 )
 
             if parsed["last"] or page + 1 >= parsed["total_pages"]:
-                break
-            if max_records and len(records) >= max_records:
-                records = records[:max_records]
-                warnings.append(f"Stopped at max_records={max_records}")
                 break
             if max_pages and page + 1 >= max_pages:
                 warnings.append(f"Stopped at max_pages={max_pages} for keyword={keyword}")

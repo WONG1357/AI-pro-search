@@ -92,7 +92,6 @@ class TgaDaenConnector(BaseSourceConnector):
         session = kwargs.get("session") or requests.Session()
         request_timeout = kwargs.get("request_timeout")
         max_pages = kwargs.get("max_pages")
-        max_records = kwargs.get("max_records")
         start_date = kwargs.get("start_date")
         end_date = kwargs.get("end_date")
         csv_path = kwargs.get("csv_path") or kwargs.get("tga_daen_csv_path")
@@ -127,7 +126,6 @@ class TgaDaenConnector(BaseSourceConnector):
                     session=session,
                     progress_reporter=progress_reporter,
                     debug=debug,
-                    max_reports=max_records,
                     max_pages=max_pages,
                 )
             finally:
@@ -659,7 +657,7 @@ def fetch_tga_daen_direct(
         debug=debug,
         progress_reporter=progress_reporter,
         max_pages=max_pages,
-        max_records=max_reports,
+        max_records=None,
     )
     if extracted_text and "pdf" in content_type:
         warnings.append(f"pdf_text_length={len(extracted_text)}")
