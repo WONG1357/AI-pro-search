@@ -28,7 +28,7 @@ from pipeline.config import (
 )
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
-from pipeline.utils import format_fda_date, parse_year_from_date
+from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
 
 try:  # optional dependency, only needed for PDF print reports
     from pypdf import PdfReader
@@ -100,6 +100,7 @@ class TgaDaenConnector(BaseSourceConnector):
             if csv_path:
                 records = load_tga_daen_csv(csv_path)
                 filtered = _filter_records(records, _merge_terms(keywords, components, accident_terms), years)
+                filtered = _filter_by_date_range(filtered, start_date, end_date)
                 return SourceFetchResult(
                     source_name=self.source_name,
                     records=ensure_unified_columns(filtered),
@@ -157,6 +158,8 @@ class TgaDaenConnector(BaseSourceConnector):
 def build_tga_daen_query(
     keywords: list[str],
     years: list[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
     components: list[str] | None = None,
     accident_terms: list[str] | None = None,
     client_config: TgaDaenClientConfig | None = None,
@@ -164,7 +167,7 @@ def build_tga_daen_query(
     """Build a device-search request payload."""
     config = client_config or TgaDaenClientConfig()
     terms = _merge_terms(keywords, components, accident_terms)
-    start_date, end_date = build_tga_date_range(years)
+    start_date, end_date = build_tga_date_range(years, explicit_start_date=start_date, explicit_end_date=end_date)
     return {
         "url": config.device_search_endpoint,
         "method": "POST",
@@ -567,9 +570,11 @@ def fetch_tga_daen_direct(
                 seen_device_ids.add(device_key)
 
     if not device_matches:
-        raise RuntimeError(
+        warnings.append(
             f"TGA DAEN found 0 device matches for keywords={keywords} date_range={start_text} to {end_text}"
         )
+        empty_df = ensure_unified_columns(pd.DataFrame())
+        return {"records": empty_df, "warnings": warnings, "metadata": {}, "raw_text": ""}
 
     selected_device_ids = _extract_device_ids(device_matches)
     if progress_reporter:
@@ -670,19 +675,21 @@ def fetch_tga_daen_direct(
         )
 
     if not raw_rows:
-        if device_matches and (search_counts.get("expected_report_count") or 0) == 0:
-            raise RuntimeError(
-                f"TGA DAEN found {len(selected_device_ids)} selected devices but returned 0 reports for date range {start_text} to {end_text}"
-            )
-        if device_matches and len(selected_device_ids) == len(raw_rows):
-            raise RuntimeError(
-                "TGA_DAEN appears to be parsing the selected device list instead of report records. "
-                f"Detected {len(selected_device_ids)} repeated device rows and 0 report numbers. "
-                "Please check List of reports / Print version URL parsing."
-            )
-        raise RuntimeError(
-            f"TGA DAEN expected {search_counts.get('expected_report_count')} reports but parsed 0 unique report records."
+        warnings.append(
+            f"TGA DAEN found {len(selected_device_ids)} selected devices but returned 0 reports for date range {start_text} to {end_text}"
         )
+        empty_df = ensure_unified_columns(pd.DataFrame())
+        metadata = {
+            "raw_link": search_response.url,
+            "event_link": search_response.url,
+            "print_report_link": final_url,
+            "search_start_date": start_text,
+            "search_end_date": end_text,
+            "selected_devices_count": search_counts.get("selected_devices_count"),
+            "expected_report_count": search_counts.get("expected_report_count"),
+            "report_generation_date": _find_report_generation_date(extracted_text or ""),
+        }
+        return {"records": empty_df, "warnings": warnings, "metadata": metadata, "raw_text": extracted_text or ""}
 
     if raw_rows and not any(row.get("report_number") for row in raw_rows):
         raise RuntimeError(
@@ -692,8 +699,9 @@ def fetch_tga_daen_direct(
         )
 
     metadata = {
-        "raw_link": final_url,
-        "event_link": final_url,
+        "raw_link": search_response.url,
+        "event_link": search_response.url,
+        "print_report_link": final_url,
         "search_start_date": start_text,
         "search_end_date": end_text,
         "selected_devices_count": search_counts.get("selected_devices_count"),
@@ -716,6 +724,8 @@ def fetch_tga_daen_direct(
         warnings.append(f"Stopped at max_reports={max_reports}")
     if max_pages and extracted_text:
         warnings.append(f"max_pages={max_pages}")
+    if (start_date is not None or end_date is not None) and not df.empty:
+        df = _filter_by_date_range(df, start_date, end_date)
 
     parsed_count = len(df)
     expected_count = search_counts.get("expected_report_count")
@@ -931,7 +941,12 @@ def fetch_tga_reports_for_devices(
         html = content.decode("utf-8", errors="replace")
         raw_rows = parse_tga_print_report_html(html, debug=debug)
         text = _strip_tags(html)
-    metadata = {"raw_link": final_url, "event_link": final_url, "selected_devices_count": counts.get("selected_devices_count")}
+    metadata = {
+        "raw_link": search_response.url,
+        "event_link": search_response.url,
+        "print_report_link": final_url,
+        "selected_devices_count": counts.get("selected_devices_count"),
+    }
     records = ensure_unified_columns(pd.DataFrame([normalize_tga_daen_report(row, metadata) for row in raw_rows]))
     return records, warnings
 
@@ -1468,3 +1483,9 @@ def _filter_records(df: pd.DataFrame, keywords: list[str], years: list[int]) -> 
     )
     mask = search.apply(lambda text: any(term.lower() in text.lower() for term in keywords))
     return filtered[mask].copy()
+
+
+def _filter_by_date_range(df: pd.DataFrame, start_date: object | None, end_date: object | None) -> pd.DataFrame:
+    if df.empty or (start_date is None and end_date is None):
+        return df
+    return df[df["event_date"].apply(lambda value: date_or_year_in_range(value, start_date, end_date))].copy()

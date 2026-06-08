@@ -53,6 +53,7 @@ class ProgressReporter:
         self.logs: list[str] = []
         self.current_source: str | None = None
         self.on_update = on_update
+        self.last_notified_at: datetime | None = None
 
     def start_source(self, source_name: str, total_steps: int | None = None, message: str = "") -> None:
         """Mark a source as running."""
@@ -79,6 +80,7 @@ class ProgressReporter:
         records_fetched: int | None = None,
         stage: str | None = None,
         message: str = "",
+        notify: bool = True,
     ) -> None:
         """Update progress fields for a source."""
         source = self._source(source_name)
@@ -98,7 +100,8 @@ class ProgressReporter:
         source.updated_at = _now()
         self.current_source = source_name
         self._recalculate(source)
-        self._notify()
+        if notify:
+            self._notify()
 
     def complete_source(
         self,
@@ -149,10 +152,12 @@ class ProgressReporter:
         """Return an immutable-style snapshot of current progress."""
         elapsed = (_now() - self.started_at).total_seconds()
         overall_percent = self._overall_percent()
-        eta = None
-        if overall_percent and overall_percent > 0:
-            eta = elapsed * (100.0 - overall_percent) / overall_percent
         status = self._overall_status()
+        eta = None
+        if overall_percent and overall_percent > 0 and status in TERMINAL_STATUSES:
+            eta = 0.0
+        elif overall_percent and 0 < overall_percent < 100:
+            eta = elapsed * (100.0 - overall_percent) / overall_percent
         return PipelineProgress(
             overall_status=status,
             current_source=self.current_source,
@@ -189,8 +194,10 @@ class ProgressReporter:
             source.percent_complete = percent
             if percent > 0 and percent < 100:
                 source.eta_seconds = source.elapsed_seconds * (100.0 - percent) / percent
-            elif percent >= 100:
+            elif percent >= 100 and source.status in TERMINAL_STATUSES:
                 source.eta_seconds = 0.0
+            elif percent >= 100:
+                source.eta_seconds = None
         else:
             source.percent_complete = None
             source.eta_seconds = None
@@ -221,6 +228,18 @@ class ProgressReporter:
     def _notify(self) -> None:
         if self.on_update:
             self.on_update(self.get_snapshot())
+
+    def tick(self, force: bool = False) -> None:
+        """Refresh elapsed/ETA display at most once per second while running."""
+        now = _now()
+        if not force and self.last_notified_at is not None:
+            if (now - self.last_notified_at).total_seconds() < 1.0:
+                return
+        for source in self.sources.values():
+            if source.status == "running":
+                self._recalculate(source)
+        self.last_notified_at = now
+        self._notify()
 
 
 def format_seconds(value: float | None) -> str:

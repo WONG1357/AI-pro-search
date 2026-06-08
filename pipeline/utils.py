@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Iterable
 
 from dateutil import parser as dt_parser
@@ -34,6 +35,62 @@ def parse_year_from_date(value: object | None) -> int | None:
         return dt_parser.parse(text, fuzzy=True).year
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def parse_date_value(value: object | None) -> date | None:
+    """Parse a complete date value into ``date``; return None for partial dates."""
+    if isinstance(value, date):
+        return value
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    if re.fullmatch(r"\d{8}", text):
+        text = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    if not _looks_like_complete_date(text):
+        return None
+
+    try:
+        return dt_parser.parse(text, fuzzy=True).date()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def date_in_range(value: object | None, start_date: object | None = None, end_date: object | None = None) -> bool:
+    """Return True when a complete date is inside the inclusive range."""
+    parsed = parse_date_value(value)
+    if parsed is None:
+        return False
+    start = parse_date_value(start_date)
+    end = parse_date_value(end_date)
+    if start and parsed < start:
+        return False
+    if end and parsed > end:
+        return False
+    return True
+
+
+def date_or_year_in_range(
+    value: object | None,
+    start_date: object | None = None,
+    end_date: object | None = None,
+) -> bool:
+    """Return True when a complete date or extracted year is inside the inclusive range."""
+    parsed = parse_date_value(value)
+    if parsed is not None:
+        return date_in_range(value, start_date=start_date, end_date=end_date)
+    year = parse_year_from_date(value)
+    if year is None:
+        return False
+    start = parse_date_value(start_date)
+    end = parse_date_value(end_date)
+    if start and year < start.year:
+        return False
+    if end and year > end.year:
+        return False
+    return True
 
 
 def format_fda_date(value: object | None) -> str:

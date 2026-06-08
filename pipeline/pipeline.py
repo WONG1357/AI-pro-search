@@ -8,12 +8,12 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from pipeline.classifier import classify_incident
+from pipeline.classifier import classify_custom_incident_details, classify_incident_details
 from pipeline.config import DEFAULT_KEYWORDS, DEFAULT_TARGET_YEARS, EXPORTS_DIR
 from pipeline.export import export_pipeline_results
 from pipeline.progress import ProgressReporter
 from pipeline.sources import DEFAULT_SELECTED_SOURCES, SOURCE_REGISTRY, ensure_unified_columns
-from pipeline.utils import contains_any_keyword, format_fda_date, parse_year_from_date
+from pipeline.utils import contains_any_keyword, date_or_year_in_range, format_fda_date, parse_year_from_date
 
 
 def run_pipeline(
@@ -27,6 +27,9 @@ def run_pipeline(
     accident_terms: list[str] | None = None,
     source_options: dict[str, dict[str, Any]] | None = None,
     mhra_csv_path: str | Path | None = None,
+    start_date: object | None = None,
+    end_date: object | None = None,
+    classifier_profile: str = "Trocar",
     **kwargs: Any,
 ) -> dict[str, pd.DataFrame]:
     """Run ingestion, cleaning, filtering, deduplication, classification, and export.
@@ -68,6 +71,8 @@ def run_pipeline(
             components=components,
             accident_terms=accident_terms,
             progress_reporter=progress_reporter,
+            start_date=start_date,
+            end_date=end_date,
             request_timeout=request_timeout,
             max_pages=max_pages,
             debug=debug,
@@ -110,11 +115,19 @@ def run_pipeline(
         return empty_results
 
     df_all = clean_records(df_all)
-    df_filtered = filter_records(df_all, keywords, years)
+    df_filtered = filter_records(df_all, keywords, years, start_date=start_date, end_date=end_date)
     df_filtered = deduplicate_records(df_filtered)
 
     print(f"[INFO] Classifying {len(df_filtered):,} filtered records...")
-    df_filtered["category"] = df_filtered["combined_text"].apply(classify_incident)
+    classification = classify_records(
+        df_filtered,
+        classifier_profile=classifier_profile,
+        components=components,
+        accident_terms=accident_terms,
+    )
+    df_filtered["category"] = classification.apply(lambda result: result.category)
+    df_filtered["category_confidence"] = classification.apply(lambda result: result.confidence)
+    df_filtered["category_reason"] = classification.apply(lambda result: result.reason)
     if "platform_category" in df_filtered.columns:
         df_filtered["platform_category"] = df_filtered["category"]
     if "category_normalized" in df_filtered.columns:
@@ -144,6 +157,24 @@ def run_pipeline(
     return results
 
 
+def classify_records(
+    df: pd.DataFrame,
+    classifier_profile: str = "Trocar",
+    components: list[str] | None = None,
+    accident_terms: list[str] | None = None,
+) -> pd.Series:
+    """Classify records using the selected device profile."""
+    if str(classifier_profile).strip().lower() == "custom":
+        return df["classification_text"].apply(
+            lambda text: classify_custom_incident_details(
+                text,
+                components=components,
+                accident_terms=accident_terms,
+            )
+        )
+    return df["classification_text"].apply(classify_incident_details)
+
+
 def clean_records(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize text and date columns and prepare searchable combined text."""
     cleaned = df.copy()
@@ -154,6 +185,8 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         "event_id",
         "report_number",
         "event_date",
+        "report_date",
+        "search_date",
         "product_name",
         "manufacturer",
         "narrative_text",
@@ -161,6 +194,8 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         "generic_name",
         "device_model",
         "product_code",
+        "fda_match_field",
+        "fda_match_category",
         "raw_link",
         "event_link",
         "device_link",
@@ -184,6 +219,8 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         "eudamed_risk_class",
         "platform_category",
         "category_normalized",
+        "category_confidence",
+        "category_reason",
     ]:
         if column not in cleaned.columns:
             cleaned[column] = ""
@@ -196,6 +233,8 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         "generic_name",
         "device_model",
         "product_code",
+        "fda_match_field",
+        "fda_match_category",
         "country",
         "event_type",
         "patient_outcome",
@@ -217,13 +256,18 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         "eudamed_risk_class",
         "platform_category",
         "category_normalized",
+        "category_confidence",
+        "category_reason",
     ]:
         cleaned[column] = cleaned[column].fillna("").astype(str)
 
-    for date_column in ["date_of_event", "date_received", "event_date"]:
+    for date_column in ["date_of_event", "date_received", "report_date", "event_date", "search_date"]:
         if date_column not in cleaned.columns:
             cleaned[date_column] = ""
         cleaned[date_column] = cleaned[date_column].fillna("").astype(str).apply(format_fda_date)
+
+    missing_report_date = cleaned["report_date"].fillna("").astype(str).str.strip() == ""
+    cleaned.loc[missing_report_date, "report_date"] = cleaned.loc[missing_report_date, "date_received"]
 
     missing_event_date = cleaned["event_date"].fillna("").astype(str).str.strip() == ""
     cleaned.loc[missing_event_date, "event_date"] = cleaned.loc[missing_event_date, "date_of_event"]
@@ -236,6 +280,14 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         cleaned["date_received"].apply(parse_year_from_date),
         errors="coerce",
     ).astype("Int64")
+    source = cleaned.get("source", pd.Series("", index=cleaned.index)).fillna("").astype(str)
+    cleaned["search_date"] = cleaned["event_date"].where(source != "FDA_MAUDE", cleaned["report_date"])
+    missing_search_date = cleaned["search_date"].fillna("").astype(str).str.strip() == ""
+    cleaned.loc[missing_search_date, "search_date"] = cleaned.loc[missing_search_date, "event_date"]
+    cleaned["search_year"] = pd.to_numeric(
+        cleaned["search_date"].apply(parse_year_from_date),
+        errors="coerce",
+    ).astype("Int64")
 
     cleaned["combined_text"] = (
         cleaned["product_name"].str.lower()
@@ -245,11 +297,39 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
         + cleaned["narrative_text"].str.lower()
     ).str.replace(r"\s+", " ", regex=True).str.strip()
 
+    cleaned["classification_text"] = (
+        cleaned["product_name"].str.lower()
+        + " "
+        + cleaned["brand_names"].str.lower()
+        + " "
+        + cleaned["generic_name"].str.lower()
+        + " "
+        + cleaned["device_model"].str.lower()
+        + " "
+        + cleaned["event_type"].str.lower()
+        + " "
+        + cleaned["device_problem_text"].str.lower()
+        + " "
+        + cleaned["patient_problem_text"].str.lower()
+        + " "
+        + cleaned["patient_outcome"].str.lower()
+        + " "
+        + cleaned["source_category_name"].str.lower()
+        + " "
+        + cleaned["narrative_text"].str.lower()
+    ).str.replace(r"\s+", " ", regex=True).str.strip()
+
     return cleaned
 
 
-def filter_records(df: pd.DataFrame, keywords: Iterable[str], years: Iterable[int]) -> pd.DataFrame:
-    """Filter records to target years and rows containing at least one keyword.
+def filter_records(
+    df: pd.DataFrame,
+    keywords: Iterable[str],
+    years: Iterable[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
+) -> pd.DataFrame:
+    """Filter records to target years, date range, and keyword matches.
 
     Some source connectors, notably TGA DAEN, apply the keyword search before
     record retrieval by selecting matching devices. Individual adverse-event
@@ -261,9 +341,16 @@ def filter_records(df: pd.DataFrame, keywords: Iterable[str], years: Iterable[in
     source_type = df.get("source_type", pd.Series("", index=df.index)).fillna("").astype(str)
     device_registry = source_type == "regulatory_device_database"
     if year_values:
-        filtered = df[df["year"].isin(year_values) | device_registry].copy()
+        search_year_match = df.get("search_year", df["year"]).isin(year_values)
+        filtered = df[search_year_match | device_registry].copy()
     else:
         filtered = df.copy()
+    if start_date is not None or end_date is not None:
+        filtered_source_type = filtered.get("source_type", pd.Series("", index=filtered.index)).fillna("").astype(str)
+        filtered_device_registry = filtered_source_type == "regulatory_device_database"
+        date_basis = filtered.get("search_date", filtered["event_date"])
+        date_mask = date_basis.apply(lambda value: date_or_year_in_range(value, start_date, end_date))
+        filtered = filtered[date_mask | filtered_device_registry].copy()
     filtered["keyword_hit"] = filtered["combined_text"].apply(lambda text: contains_any_keyword(text, keywords))
     if "source_query_match" in filtered.columns:
         source_match = filtered["source_query_match"].fillna(False).astype(bool)
@@ -296,12 +383,14 @@ def deduplicate_records(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def summarize_by_year_category(df: pd.DataFrame) -> pd.DataFrame:
-    """Count unique incidents by event year and classifier category."""
+    """Count unique incidents by selected search year and classifier category."""
     if df.empty:
         return pd.DataFrame(columns=["year", "category", "incident_count"])
+    year_column = "search_year" if "search_year" in df.columns else "year"
     return (
-        df.groupby(["year", "category"], as_index=False)
+        df.groupby([year_column, "category"], as_index=False)
         .agg(incident_count=("event_id", _incident_count))
+        .rename(columns={year_column: "year"})
         .sort_values(["year", "incident_count"], ascending=[True, False])
     )
 

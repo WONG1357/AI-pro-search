@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
-from pipeline.utils import format_fda_date, parse_year_from_date
+from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,8 @@ class BfarmRecallConnector(BaseSourceConnector):
             df, warnings = fetch_bfarm_recalls_direct(
                 keywords=_merge_terms(keywords, components, accident_terms),
                 years=years,
+                start_date=kwargs.get("start_date"),
+                end_date=kwargs.get("end_date"),
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
@@ -92,6 +94,8 @@ class BfarmRecallConnector(BaseSourceConnector):
 def fetch_bfarm_recalls_direct(
     keywords: list[str],
     years: list[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
     client_config: BfarmClientConfig | None = None,
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
@@ -102,6 +106,8 @@ def fetch_bfarm_recalls_direct(
     config = client_config or BfarmClientConfig()
     session = session or requests.Session()
     warnings: list[str] = []
+    start_date_text = _normalize_bfarm_date(start_date) if start_date is not None else None
+    end_date_text = _normalize_bfarm_date(end_date) if end_date is not None else None
     terms = _bfarm_search_terms(_merge_terms(keywords, None, None))
     records_by_key: dict[str, dict[str, Any]] = {}
     desired_years = set(int(year) for year in years)
@@ -145,7 +151,7 @@ def fetch_bfarm_recalls_direct(
                 continue
             records = parse_bfarm_results(response.text, response.url)
             records = [record for record in records if _is_medical_device_customer_information(record)]
-            _add_bfarm_records(records, records_by_key, desired_years)
+            _add_bfarm_records(records, records_by_key, desired_years, start_date=start_date_text, end_date=end_date_text)
             if progress_reporter:
                 progress_reporter.update_source(
                     SOURCE_NAME,
@@ -356,11 +362,15 @@ def _add_bfarm_records(
     records: list[dict[str, Any]],
     records_by_key: dict[str, dict[str, Any]],
     desired_years: set[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
 ) -> None:
     for raw in records:
         rec = normalize_bfarm_record(raw)
         rec["source_query_match"] = True
         if desired_years and rec.get("year") not in desired_years:
+            continue
+        if (start_date is not None or end_date is not None) and not date_or_year_in_range(rec.get("event_date"), start_date, end_date):
             continue
         key = rec["event_id"]
         existing = records_by_key.get(key)
@@ -389,6 +399,15 @@ def _extract_date(text: str) -> str:
         if match:
             return format_fda_date(match.group(0))
     return ""
+
+
+def _normalize_bfarm_date(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    return format_fda_date(text)
 
 
 def _is_medical_device_customer_information(raw: dict[str, Any]) -> bool:

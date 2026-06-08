@@ -31,20 +31,40 @@ class OpenFdaMaudeConnector(BaseSourceConnector):
         try:
             search_terms = _merge_terms(keywords, components, accident_terms)
             total_steps = max(1, len(search_terms) * len(years) * 3)
+            start_date = kwargs.get("start_date")
+            end_date = kwargs.get("end_date")
             if progress_reporter:
                 progress_reporter.update_source(
                     self.source_name,
                     current_step=0,
                     total_steps=total_steps,
                     stage="Fetching openFDA MAUDE",
-                    message=f"Searching {len(search_terms)} terms across {len(years)} years",
+                    message=f"Searching {len(search_terms)} terms from {start_date or min(years, default='')} to {end_date or max(years, default='')}",
                 )
+
+            def report_openfda_progress(current_step: int, step_count: int, records_fetched: int, message: str) -> None:
+                if not progress_reporter:
+                    return
+                progress_reporter.update_source(
+                    self.source_name,
+                    current_step=current_step,
+                    total_steps=step_count,
+                    records_fetched=records_fetched,
+                    stage="Fetching openFDA MAUDE",
+                    message=message,
+                    notify=False,
+                )
+                progress_reporter.tick()
+
             records = fetch_fda_maude_openfda(
                 search_terms,
                 years,
+                start_date=start_date,
+                end_date=end_date,
                 limit_per_query=kwargs.get("limit_per_query", 100),
                 max_skip_per_query=kwargs.get("max_skip_per_query", 1000),
                 request_timeout=int(kwargs.get("request_timeout") or 60),
+                progress_callback=report_openfda_progress,
             )
             if progress_reporter:
                 progress_reporter.update_source(

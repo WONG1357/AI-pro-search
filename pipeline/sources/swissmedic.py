@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -80,6 +81,8 @@ class SwissmedicFscaConnector(BaseSourceConnector):
             records, warnings = fetch_swissmedic_fsca_direct(
                 keywords=_merge_terms(keywords, components, accident_terms),
                 years=years,
+                start_date=kwargs.get("start_date"),
+                end_date=kwargs.get("end_date"),
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
@@ -110,15 +113,19 @@ def build_swissmedic_date_range(
 ) -> tuple[str, str]:
     """Build Swissmedic recall date range from selected years."""
     if explicit_start_date:
-        start = str(explicit_start_date)
+        start = explicit_start_date.isoformat() if isinstance(explicit_start_date, date) else str(explicit_start_date)
     else:
         start = f"{min(years) if years else date.today().year}-01-01"
     if explicit_end_date:
-        end = str(explicit_end_date)
+        end = explicit_end_date.isoformat() if isinstance(explicit_end_date, date) else str(explicit_end_date)
     else:
         latest_year = max(years) if years else date.today().year
         today = date.today()
         end = today.isoformat() if latest_year >= today.year else f"{latest_year}-12-31"
+    if end and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+        end = format_fda_date(end)
+    if start and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start):
+        start = format_fda_date(start)
     return start, end
 
 
@@ -193,6 +200,8 @@ def parse_swissmedic_response(response_or_data: requests.Response | dict[str, An
 def fetch_swissmedic_fsca_direct(
     keywords: list[str],
     years: list[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
     client_config: SwissmedicFscaClientConfig | None = None,
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
@@ -202,7 +211,7 @@ def fetch_swissmedic_fsca_direct(
     """Fetch Swissmedic FSCA recall records with OR keyword semantics."""
     config = client_config or SwissmedicFscaClientConfig()
     session = session or requests.Session()
-    start_date, end_date = build_swissmedic_date_range(years)
+    start_date, end_date = build_swissmedic_date_range(years, explicit_start_date=start_date, explicit_end_date=end_date)
     warnings: list[str] = []
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -234,7 +243,11 @@ def fetch_swissmedic_fsca_direct(
             page_records = parsed["content"]
             new_count = 0
             for raw in page_records:
-                normalized = normalize_swissmedic_record(raw, config)
+                normalized = normalize_swissmedic_record(
+                    raw,
+                    config,
+                    search_link=build_swissmedic_search_link(keyword, start_date, end_date),
+                )
                 normalized["source_query_match"] = True
                 key = normalized["event_id"]
                 if key not in seen:
@@ -266,7 +279,11 @@ def fetch_swissmedic_fsca_direct(
     return df, warnings
 
 
-def normalize_swissmedic_record(raw: dict[str, Any], client_config: SwissmedicFscaClientConfig | None = None) -> dict[str, Any]:
+def normalize_swissmedic_record(
+    raw: dict[str, Any],
+    client_config: SwissmedicFscaClientConfig | None = None,
+    search_link: str | None = None,
+) -> dict[str, Any]:
     """Normalize one Swissmedic FSCA publication to the common schema."""
     config = client_config or SwissmedicFscaClientConfig()
     ref = str(raw.get("swissmedicRef") or "").strip()
@@ -284,7 +301,8 @@ def normalize_swissmedic_record(raw: dict[str, Any], client_config: SwissmedicFs
         }
         for index, doc in enumerate(documents)
     ]
-    event_link = _preferred_document_link(document_links) or build_swissmedic_search_link("", publication_date, publication_date)
+    search_link = search_link or build_swissmedic_search_link("", publication_date, publication_date)
+    event_link = search_link
     narrative_parts = [
         raw.get("begruendung"),
         raw.get("status"),
@@ -302,6 +320,8 @@ def normalize_swissmedic_record(raw: dict[str, Any], client_config: SwissmedicFs
         "released": raw.get("freigeschaltet"),
         "devices": devices,
         "documents": document_links,
+        "search_link": search_link,
+        "download_link": _preferred_document_link(document_links),
     }
     record = {
         "source": SOURCE_NAME,
@@ -325,8 +345,9 @@ def normalize_swissmedic_record(raw: dict[str, Any], client_config: SwissmedicFs
         "device_problem_text": str(raw.get("begruendung") or ""),
         "patient_problem_text": "",
         "narrative_text": " | ".join(str(part) for part in narrative_parts if part),
-        "raw_link": build_swissmedic_search_link("", publication_date, publication_date),
+        "raw_link": search_link,
         "event_link": event_link,
+        "device_link": _preferred_document_link(document_links),
         "source_category": str(raw.get("status") or ""),
         "source_category_name": str(raw.get("status") or ""),
         "source_category_system": "Swissmedic FSCA status",

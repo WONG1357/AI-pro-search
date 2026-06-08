@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 from pipeline.config import MHRA_FSCA_BASE_URL, MHRA_FSCA_SEARCH_ENDPOINT, MHRA_FSCA_TIMEOUT, MHRA_FSCA_USER_AGENT
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
-from pipeline.utils import format_fda_date, parse_year_from_date
+from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,8 @@ class MhraFscaConnector(BaseSourceConnector):
             records, warnings = fetch_mhra_fsca_direct(
                 keywords=_merge_terms(keywords, components, accident_terms),
                 years=years,
+                start_date=kwargs.get("start_date"),
+                end_date=kwargs.get("end_date"),
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
@@ -185,6 +187,8 @@ def parse_mhra_notice_page(html: str, page_url: str, keyword: str = "") -> list[
 def fetch_mhra_fsca_direct(
     keywords: list[str],
     years: list[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
     client_config: MhraFscaClientConfig | None = None,
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
@@ -226,6 +230,8 @@ def fetch_mhra_fsca_direct(
                     record = normalize_mhra_fsca_record(raw)
                     record["source_query_match"] = True
                     if years and record.get("year") not in years:
+                        continue
+                    if (start_date is not None or end_date is not None) and not date_or_year_in_range(record.get("event_date"), start_date, end_date):
                         continue
                     key = record["event_id"]
                     if key not in seen_records:

@@ -7,13 +7,14 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import pandas as pd
 import requests
 
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
-from pipeline.utils import format_fda_date, parse_year_from_date
+from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,8 @@ class HealthCanadaMdiConnector(BaseSourceConnector):
             records, warnings = fetch_health_canada_mdi_direct(
                 keywords=terms,
                 years=years,
+                start_date=kwargs.get("start_date"),
+                end_date=kwargs.get("end_date"),
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(max_pages) if max_pages else None,
@@ -92,6 +95,8 @@ class HealthCanadaMdiConnector(BaseSourceConnector):
 def fetch_health_canada_mdi_direct(
     keywords: list[str],
     years: list[int],
+    start_date: object | None = None,
+    end_date: object | None = None,
     client_config: HealthCanadaMdiClientConfig | None = None,
     session: requests.Session | None = None,
     progress_reporter: ProgressReporter | None = None,
@@ -170,14 +175,24 @@ def fetch_health_canada_mdi_direct(
             start += page_size
             page += 1
 
-    normalized = [normalize_health_canada_mdi_record(raw) for raw in raw_records]
+    search_url = build_health_canada_results_url(keywords, config)
+    normalized = [normalize_health_canada_mdi_record(raw, search_url=search_url) for raw in raw_records]
     df = ensure_unified_columns(pd.DataFrame(normalized))
     if years and not df.empty:
         df["year"] = pd.to_numeric(df["year"], errors="coerce").astype("Int64")
         df = df[df["year"].isin(years)].copy()
+    if (start_date is not None or end_date is not None) and not df.empty:
+        df = df[df["event_date"].apply(lambda value: date_or_year_in_range(value, start_date, end_date))].copy()
     warnings.append(f"health_canada_mdi_raw_records={len(raw_records)}")
     warnings.append(f"health_canada_mdi_filtered_records={len(df)}")
     return df, warnings
+
+
+def build_health_canada_results_url(keywords: list[str], client_config: HealthCanadaMdiClientConfig | None = None) -> str:
+    """Build the public Health Canada MDI results page URL for the active query."""
+    config = client_config or HealthCanadaMdiClientConfig()
+    query = " ".join(str(term).strip() for term in keywords if str(term).strip())
+    return f"{config.results_page_url}?{urlencode({'q': query})}" if query else config.results_page_url
 
 
 def build_health_canada_mdi_payload(keyword: str, start: int = 0, length: int = 100) -> dict[str, str]:
@@ -222,7 +237,7 @@ def parse_health_canada_mdi_response(response: requests.Response) -> dict[str, A
     return data
 
 
-def normalize_health_canada_mdi_record(raw: dict[str, Any]) -> dict[str, Any]:
+def normalize_health_canada_mdi_record(raw: dict[str, Any], search_url: str | None = None) -> dict[str, Any]:
     """Normalize one Health Canada MDI raw incident to the common schema."""
     incident = raw.get("incident", raw)
     incident_id = str(incident.get("incident_id", "")).strip()
@@ -251,6 +266,7 @@ def normalize_health_canada_mdi_record(raw: dict[str, Any]) -> dict[str, Any]:
         "device_detail": incident.get("device_detail"),
         "company_detail": incident.get("company_detail"),
         "problem_detail": problem_details,
+        "results_page_url": search_url,
     }
     record = {
         "source": SOURCE_NAME,
@@ -274,8 +290,8 @@ def normalize_health_canada_mdi_record(raw: dict[str, Any]) -> dict[str, Any]:
         "device_problem_text": "; ".join(device_problems),
         "patient_problem_text": "; ".join(health_effects),
         "narrative_text": narrative,
-        "raw_link": "",
-        "event_link": "",
+        "raw_link": search_url or "",
+        "event_link": search_url or "",
         "record_hash": "",
         "source_specific": json.dumps(source_specific, ensure_ascii=False, default=str),
         "raw_record": json.dumps(raw, ensure_ascii=False, default=str),

@@ -4,6 +4,7 @@ import requests
 from pipeline.config import UNIFIED_COLUMNS
 from pipeline.sources import SOURCE_REGISTRY
 from pipeline.sources.base import ensure_unified_columns
+from pipeline.utils import date_or_year_in_range
 from pipeline.sources.bfarm import (
     BfarmClientConfig,
     build_bfarm_search_payload,
@@ -16,6 +17,7 @@ from pipeline.sources.bfarm import (
 from pipeline.sources.health_canada_mdi import (
     HealthCanadaMdiClientConfig,
     build_health_canada_mdi_payload,
+    build_health_canada_results_url,
     fetch_health_canada_mdi_direct,
     normalize_health_canada_mdi_record,
     parse_health_canada_mdi_response,
@@ -52,6 +54,7 @@ from pipeline.sources.tga_daen import (
     parse_tga_daen_response,
     extract_tga_device_options,
 )
+from pipeline.sources_openfda import deduplicate_fda_maude_rows, fda_match_category, fetch_fda_maude_openfda
 
 
 def test_ensure_unified_columns_adds_missing_columns() -> None:
@@ -63,6 +66,116 @@ def test_ensure_unified_columns_adds_missing_columns() -> None:
 def test_source_registry_contains_expected_sources() -> None:
     for source_id in ["FDA_MAUDE", "TGA_DAEN", "HEALTH_CANADA_MDI", "SWISSMEDIC_FSCA", "MHRA_FSCA", "BFARM_RECALLS"]:
         assert source_id in SOURCE_REGISTRY
+
+
+def test_openfda_deduplicates_overlapping_query_hits() -> None:
+    records = pd.DataFrame(
+        [
+            {
+                "event_id": "18562812",
+                "report_number": "MW5111111",
+                "event_date": "2026-01-05",
+                "product_name": "Trocar",
+                "brand_names": "Laparoscopic trocar",
+                "fda_match_category": "Brand name matches",
+                "narrative_text": "Returned by brand name search.",
+            },
+            {
+                "event_id": "18562812",
+                "report_number": "MW5111111",
+                "event_date": "2026-01-05",
+                "product_name": "Trocar",
+                "brand_names": "Laparoscopic trocar",
+                "fda_match_category": "Generic name matches",
+                "narrative_text": "Returned by generic name search.",
+            },
+            {
+                "event_id": "",
+                "report_number": "MW5222222",
+                "event_date": "2026-02-10",
+                "product_name": "Trocar sleeve",
+                "brand_names": "",
+                "fda_match_category": "Narrative matches",
+                "narrative_text": "Returned by narrative search.",
+            },
+            {
+                "event_id": "",
+                "report_number": "MW5222222",
+                "event_date": "2026-02-10",
+                "product_name": "Trocar sleeve",
+                "brand_names": "",
+                "fda_match_category": "Narrative matches",
+                "narrative_text": "Returned by another keyword search.",
+            },
+        ]
+    )
+
+    deduped = deduplicate_fda_maude_rows(records)
+
+    assert len(deduped) == 2
+    assert list(deduped["report_number"]) == ["MW5111111", "MW5222222"]
+
+
+def test_openfda_overlap_prefers_device_match_over_narrative() -> None:
+    records = pd.DataFrame(
+        [
+            {
+                "event_id": "18562812",
+                "report_number": "MW5111111",
+                "event_date": "2026-01-05",
+                "product_name": "Trocar",
+                "brand_names": "",
+                "fda_match_category": "Narrative matches",
+                "narrative_text": "Returned by narrative search.",
+            },
+            {
+                "event_id": "18562812",
+                "report_number": "MW5111111",
+                "event_date": "2026-01-05",
+                "product_name": "Trocar",
+                "brand_names": "",
+                "fda_match_category": "Brand name matches",
+                "narrative_text": "Returned by brand name search.",
+            },
+        ]
+    )
+
+    deduped = deduplicate_fda_maude_rows(records)
+
+    assert len(deduped) == 1
+    assert deduped.iloc[0]["fda_match_category"] == "Brand name matches"
+
+
+def test_openfda_match_category_maps_query_fields() -> None:
+    assert fda_match_category("device.brand_name") == "Brand name matches"
+    assert fda_match_category("device.generic_name") == "Generic name matches"
+    assert fda_match_category("mdr_text.text") == "Narrative matches"
+
+
+def test_openfda_queries_by_report_date(monkeypatch) -> None:
+    calls = []
+    progress_updates = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append({"url": url, "params": dict(params or {}), "timeout": timeout})
+        return make_response(404, b"{}")
+
+    monkeypatch.setattr("pipeline.sources_openfda.requests.get", fake_get)
+
+    records = fetch_fda_maude_openfda(
+        ["trocar"],
+        [2024],
+        start_date="2024-02-01",
+        end_date="2024-02-29",
+        progress_callback=lambda current, total, records, message: progress_updates.append((current, total, records, message)),
+    )
+
+    assert records.empty
+    assert calls
+    assert "date_received:[20240201 TO 20240229]" in calls[0]["params"]["search"]
+    assert "date_of_event" not in calls[0]["params"]["search"]
+    assert progress_updates
+    assert progress_updates[0][1] == 3
 
 
 def sample_swissmedic_raw() -> dict:
@@ -111,7 +224,11 @@ def test_swissmedic_response_parser() -> None:
 
 
 def test_swissmedic_normalization_maps_recall_fields() -> None:
-    normalized = normalize_swissmedic_record(sample_swissmedic_raw(), SwissmedicFscaClientConfig(base_url="https://example.test/mep"))
+    normalized = normalize_swissmedic_record(
+        sample_swissmedic_raw(),
+        SwissmedicFscaClientConfig(base_url="https://example.test/mep"),
+        search_link="https://example.test/mep/#/?q=trocar&from=2024-03-05&to=2024-03-05&onlyUpdates=false&sort=PUBLICATION_DATE&direction=DESC",
+    )
     assert normalized["source"] == "SWISSMEDIC_FSCA"
     assert normalized["source_type"] == "regulatory_recall"
     assert normalized["event_id"] == "Vk_20240304_29"
@@ -120,7 +237,7 @@ def test_swissmedic_normalization_maps_recall_fields() -> None:
     assert normalized["product_name"] == "Auto Suture Structural Balloon Trocar"
     assert normalized["device_model"] == "OMS-T10SB"
     assert normalized["event_type"] == "FIRST"
-    assert normalized["event_link"] == "https://example.test/mep/api/publications/Vk_20240304_29/documents/1"
+    assert normalized["event_link"] == "https://example.test/mep/#/?q=trocar&from=2024-03-05&to=2024-03-05&onlyUpdates=false&sort=PUBLICATION_DATE&direction=DESC"
 
 
 def test_swissmedic_direct_fetch_success_with_mock_http() -> None:
@@ -133,7 +250,7 @@ def test_swissmedic_direct_fetch_success_with_mock_http() -> None:
         ]
     )
     config = SwissmedicFscaClientConfig(base_url="https://example.test/mep", search_endpoint="/api/publications/search")
-    df, warnings = fetch_swissmedic_fsca_direct(["trocar"], [2024], client_config=config, session=session)
+    df, warnings = fetch_swissmedic_fsca_direct(["trocar"], [2024], start_date="2024-01-01", end_date="2024-12-31", client_config=config, session=session)
     assert len(df) == 1
     assert df.iloc[0]["source"] == "SWISSMEDIC_FSCA"
     assert session.calls[0]["json"]["queryTerm"] == "trocar"
@@ -148,7 +265,7 @@ def test_swissmedic_repeated_page_warning_is_scoped_per_keyword() -> None:
         ]
     )
     config = SwissmedicFscaClientConfig(base_url="https://example.test/mep", search_endpoint="/api/publications/search")
-    df, warnings = fetch_swissmedic_fsca_direct(["trocar", "kii"], [2024], client_config=config, session=session)
+    df, warnings = fetch_swissmedic_fsca_direct(["trocar", "kii"], [2024], start_date="2024-01-01", end_date="2024-12-31", client_config=config, session=session)
     assert len(df) == 1
     assert warnings
 
@@ -198,6 +315,24 @@ def test_mhra_notice_page_parser_and_normalization() -> None:
     assert normalized["event_link"] == "https://mhra-gov.filecamp.com/s/d/example"
 
 
+def test_mhra_date_range_filter_excludes_out_of_range_records() -> None:
+    record = normalize_mhra_fsca_record(
+        {
+            "weekly_title": "Field Safety Notices",
+            "weekly_url": "https://www.gov.uk/drug-device-alerts/test",
+            "heading": "Covidien: Example Trocar",
+            "body": "Model: ABC-123",
+            "issued_date": "2024-03-05",
+            "links": [],
+        }
+    )
+
+    assert record["year"] == 2024
+    assert record["event_date"] == "2024-03-05"
+    assert date_or_year_in_range(record["event_date"], "2024-03-01", "2024-03-31") is True
+    assert date_or_year_in_range(record["event_date"], "2024-04-01", "2024-04-30") is False
+
+
 def test_mhra_partial_date_is_preserved() -> None:
     html = """
     <html><body>
@@ -242,6 +377,25 @@ def test_bfarm_parser_and_normalization() -> None:
     assert normalized["event_link"] == "https://www.bfarm.de/SharedDocs/Kundeninfos/EN/13/2023/06720-23_kundeninfo_en.pdf?__blob=publicationFile"
 
 
+def test_bfarm_date_range_filter_excludes_out_of_range_records() -> None:
+    record = normalize_bfarm_record(
+        {
+            "title": "Urgent Field Safety Notice for MANI Trocar Kit",
+            "text": "Topics: Medical devices Type: Customer information Reference 06720/23",
+            "url": "https://www.bfarm.de/example.pdf",
+            "date": "2023-05-02",
+            "topic": "Medical devices",
+            "notice_type": "Customer information",
+            "reference": "06720/23",
+        }
+    )
+
+    assert record["year"] == 2023
+    assert record["event_date"] == "2023-05-02"
+    assert date_or_year_in_range(record["event_date"], "2023-05-01", "2023-05-31") is True
+    assert date_or_year_in_range(record["event_date"], "2024-01-01", "2024-12-31") is False
+
+
 def test_bfarm_search_payload() -> None:
     payload = build_bfarm_search_payload("trocar", year_facet="lastyear")
     assert payload["templateQueryString"] == "trocar"
@@ -270,7 +424,7 @@ def test_bfarm_direct_fetch_mock_http() -> None:
         make_response(200, b"<html><body><section id='results'><li class='l-teaser-list__item'><a href='/node/123'>Example Trocar Recall</a><span class='c-icon-teaser__date'>Date: 2024-05-01</span><span class='c-icon-teaser__topic'>Topics: Medical devices</span><span class='c-icon-teaser__category'>Type: Customer information</span><p>Reference 12345/24</p></li></section></body></html>", "text/html"),
     ])
     config = BfarmClientConfig(base_url="https://www.bfarm.de", search_path="/SiteGlobals/Forms/Suche/EN/Expertensuche_Formular.html")
-    df, warnings = fetch_bfarm_recalls_direct(["trocar"], [2024], client_config=config, session=session)
+    df, warnings = fetch_bfarm_recalls_direct(["trocar"], [2024], start_date="2024-01-01", end_date="2024-12-31", client_config=config, session=session)
     assert len(df) == 1
     assert session.calls[0]["params"]["templateQueryString"] == "Trocar"
     assert "dateOfIssue_dt" not in session.calls[0]["params"]
@@ -315,7 +469,8 @@ def test_health_canada_normalization_preserves_source_specific_fields() -> None:
                 ],
                 "device_detail": [{"pref_name_code": "87"}],
             }
-        }
+        },
+        search_url="https://hpr-rps.hres.ca/mdi_results.php?q=trocar",
     )
 
     assert normalized["source"] == "HEALTH_CANADA_MDI"
@@ -326,7 +481,13 @@ def test_health_canada_normalization_preserves_source_specific_fields() -> None:
     assert normalized["device_problem_text"] == "A0401 - Break"
     assert normalized["patient_outcome"] == "E2008 - Foreign Body In Patient"
     assert normalized["source_specific"]
+    assert normalized["event_link"] == "https://hpr-rps.hres.ca/mdi_results.php?q=trocar"
     assert normalized["raw_record"]
+
+
+def test_health_canada_results_url_builder() -> None:
+    url = build_health_canada_results_url(["trocar", "port"], HealthCanadaMdiClientConfig(base_url="https://hpr-rps.hres.ca"))
+    assert url == "https://hpr-rps.hres.ca/mdi_results.php?q=trocar+port"
 
 
 def test_health_canada_direct_fetch_success_with_mock_http() -> None:
@@ -346,6 +507,8 @@ def test_health_canada_direct_fetch_success_with_mock_http() -> None:
     df, warnings = fetch_health_canada_mdi_direct(
         ["trocar"],
         [2024],
+        start_date="2024-01-01",
+        end_date="2024-12-31",
         client_config=config,
         session=session,
         max_pages=1,
@@ -424,7 +587,7 @@ def test_tga_query_builder_uses_user_terms_and_years() -> None:
         page_size=25,
     )
 
-    query = build_tga_daen_query(["catheter"], [2024, 2025], components=["balloon"], client_config=config)
+    query = build_tga_daen_query(["catheter"], [2024, 2025], start_date="2024-01-01", end_date="2025-12-31", components=["balloon"], client_config=config)
 
     assert query["url"] == "https://example.test/search/devices"
     assert query["json"]["prefix"] == "catheter OR balloon"
@@ -685,10 +848,10 @@ def test_tga_direct_fetch_failed_request() -> None:
         page_size=50,
     )
 
-    result = TgaDaenConnector(client_config=config).fetch(["trocar"], [2025], session=session)
+    result = TgaDaenConnector(client_config=config).fetch(["trocar"], [2025], session=session, start_date="2024-01-01", end_date="2026-02-07")
 
-    assert result.success is False
-    assert "TGA DAEN direct fetch failed" in result.error_message
+    assert result.success is True
+    assert result.records.empty
     assert result.warnings
 
 
