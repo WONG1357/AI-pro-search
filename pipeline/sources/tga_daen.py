@@ -428,16 +428,21 @@ def parse_tga_print_report_html(html: str, debug: bool = False) -> list[dict[str
     return _parse_daen_report_blocks(html) or _parse_daen_markdown_rows(html)
 
 
-def parse_tga_report_summary_html(html: str) -> list[dict[str, Any]]:
+def parse_tga_report_summary_html(html: str, base_url: str = "") -> list[dict[str, Any]]:
     """Parse the DAEN list-of-reports summary table."""
     records: list[dict[str, Any]] = []
-    for table in _extract_html_tables(html):
-        headers = [_normalize_header(cell) for cell in table["headers"]]
+    for table in _extract_html_tables_with_html(html):
+        headers = [_normalize_tga_report_header(_html_cell_text(cell)) for cell in table["headers"]]
         required = {"report_number", "report_date", "trade_name"}
         if not required.issubset(set(headers)):
             continue
-        for row in table["rows"]:
+        if {"event_description", "outcome"}.intersection(headers):
+            continue
+        for row_html in table["rows"]:
+            row = [_html_cell_text(cell) for cell in row_html]
             raw = {headers[idx]: row[idx] if idx < len(row) else "" for idx in range(len(headers))}
+            report_cell = row_html[headers.index("report_number")] if "report_number" in headers and headers.index("report_number") < len(row_html) else ""
+            report_link = _extract_first_href(report_cell, base_url)
             records.append(
                 _normalize_report_row(
                     {
@@ -450,6 +455,7 @@ def parse_tga_report_summary_html(html: str) -> list[dict[str, Any]]:
                         "gmdn_term": raw.get("gmdn_term", ""),
                         "event_description": raw.get("gmdn_term", "") or raw.get("trade_name", ""),
                         "outcome": "",
+                        "event_link": "",
                     }
                 )
             )
@@ -606,7 +612,7 @@ def fetch_tga_daen_direct(
     list_url = find_tga_list_of_reports_url(search_response.text or "", search_response.url)
     print_url = find_tga_print_version_url(search_response.text or "", search_response.url)
     report_source_url = search_response.url
-    summary_rows = parse_tga_report_summary_html(search_response.text or "")
+    summary_rows = parse_tga_report_summary_html(search_response.text or "", search_response.url)
     search_has_report_rows = bool(summary_rows)
 
     if progress_reporter:
@@ -680,8 +686,8 @@ def fetch_tga_daen_direct(
         )
         empty_df = ensure_unified_columns(pd.DataFrame())
         metadata = {
-            "raw_link": search_response.url,
-            "event_link": search_response.url,
+            "raw_link": "",
+            "event_link": "",
             "print_report_link": final_url,
             "search_start_date": start_text,
             "search_end_date": end_text,
@@ -699,8 +705,8 @@ def fetch_tga_daen_direct(
         )
 
     metadata = {
-        "raw_link": search_response.url,
-        "event_link": search_response.url,
+        "raw_link": "",
+        "event_link": "",
         "print_report_link": final_url,
         "search_start_date": start_text,
         "search_end_date": end_text,
@@ -942,8 +948,8 @@ def fetch_tga_reports_for_devices(
         raw_rows = parse_tga_print_report_html(html, debug=debug)
         text = _strip_tags(html)
     metadata = {
-        "raw_link": search_response.url,
-        "event_link": search_response.url,
+        "raw_link": "",
+        "event_link": "",
         "print_report_link": final_url,
         "selected_devices_count": counts.get("selected_devices_count"),
     }
@@ -995,8 +1001,6 @@ def normalize_tga_daen_record(record: dict[str, Any]) -> dict[str, object]:
     device_problem_text = _first_value(record, ["device_problem_text", "device_problem", "problem"])
     patient_problem_text = _first_value(record, ["patient_problem_text", "patient_problem"])
     narrative_text = _first_value(record, ["narrative_text", "description", "summary", "adverse_event", "DisplayName"])
-    raw_link = _first_value(record, ["raw_link", "url", "link"])
-
     normalized = {
         "source": TGA_DAEN_SOURCE_NAME,
         "source_type": TGA_DAEN_SOURCE_TYPE,
@@ -1019,8 +1023,8 @@ def normalize_tga_daen_record(record: dict[str, Any]) -> dict[str, object]:
         "device_problem_text": device_problem_text,
         "patient_problem_text": patient_problem_text,
         "narrative_text": narrative_text,
-        "raw_link": raw_link,
-        "event_link": raw_link,
+        "raw_link": "",
+        "event_link": "",
         "record_hash": "",
     }
     normalized["record_hash"] = _record_hash(normalized)
@@ -1211,10 +1215,21 @@ def _normalize_report_row(raw_report: dict[str, Any]) -> dict[str, Any]:
         "model_ref": model_ref,
         "event_description": event_description,
         "outcome": outcome,
+        "event_link": _first_value(normalized_keys, ["event_link", "report_link", "case_link", "url", "link"]),
     }
 
 
 def _extract_html_tables(html_text: str) -> list[dict[str, list[list[str]]]]:
+    tables: list[dict[str, list[list[str]]]] = []
+    for table in _extract_html_tables_with_html(html_text):
+        headers = [_html_cell_text(cell) for cell in table["headers"]]
+        rows = [[_html_cell_text(cell) for cell in row] for row in table["rows"]]
+        if headers and rows:
+            tables.append({"headers": headers, "rows": rows})
+    return tables
+
+
+def _extract_html_tables_with_html(html_text: str) -> list[dict[str, list[list[str]]]]:
     tables: list[dict[str, list[list[str]]]] = []
     for table_html in re.findall(r"<table.*?>.*?</table>", html_text, flags=re.I | re.S):
         header_rows = re.findall(r"<tr.*?>(.*?)</tr>", table_html, flags=re.I | re.S)
@@ -1223,7 +1238,7 @@ def _extract_html_tables(html_text: str) -> list[dict[str, list[list[str]]]]:
         headers: list[str] = []
         rows: list[list[str]] = []
         for idx, row_html in enumerate(header_rows):
-            cells = [unescape(_strip_tags(cell)).strip() for cell in re.findall(r"<t[dh].*?>(.*?)</t[dh]>", row_html, flags=re.I | re.S)]
+            cells = re.findall(r"<t[dh]\b.*?>(.*?)</t[dh]>", row_html, flags=re.I | re.S)
             if not cells:
                 continue
             if idx == 0:
@@ -1233,6 +1248,20 @@ def _extract_html_tables(html_text: str) -> list[dict[str, list[list[str]]]]:
         if headers and rows:
             tables.append({"headers": headers, "rows": rows})
     return tables
+
+
+def _html_cell_text(cell_html: str) -> str:
+    return unescape(_strip_tags(cell_html)).strip()
+
+
+def _extract_first_href(cell_html: str, base_url: str = "") -> str:
+    match = re.search(r"<a\b[^>]+href=[\"']([^\"']+)[\"']", cell_html, flags=re.I | re.S)
+    if not match:
+        return ""
+    href = unescape(match.group(1)).strip()
+    if not href or href.lower().startswith("javascript:"):
+        return href
+    return requests.compat.urljoin(base_url, href)
 
 
 def _find_link_by_text(
@@ -1255,6 +1284,17 @@ def _find_link_by_text(
 
 def _normalize_header(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _normalize_tga_report_header(value: str) -> str:
+    header = _normalize_header(value)
+    aliases = {
+        "report": "report_number",
+        "report_no": "report_number",
+        "report_num": "report_number",
+        "date": "report_date",
+    }
+    return aliases.get(header, header)
 
 
 def _find_report_generation_date(text: str) -> str | None:

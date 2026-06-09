@@ -50,6 +50,7 @@ from pipeline.sources.tga_daen import (
     normalize_tga_daen_record,
     parse_tga_print_report_html,
     parse_tga_print_report_text,
+    parse_tga_report_summary_html,
     parse_tga_search_result_counts,
     parse_tga_daen_response,
     extract_tga_device_options,
@@ -548,6 +549,8 @@ def test_tga_daen_csv_loader_maps_flexible_columns(tmp_path) -> None:
     assert list(df["manufacturer"]) == ["Example Sponsor"]
     assert list(df["event_type"]) == ["Injury"]
     assert list(df["year"]) == [2025]
+    assert list(df["event_link"]) == [""]
+    assert list(df["raw_link"]) == [""]
 
 
 def test_tga_daen_connector_filters_csv_by_keyword_and_year(tmp_path) -> None:
@@ -743,6 +746,35 @@ def test_tga_report_normalization_maps_unified_fields() -> None:
     assert normalized["record_hash"]
 
 
+def test_tga_report_normalization_omits_links() -> None:
+    normalized = normalize_tga_daen_report(
+        {
+            "report_number": "126402",
+            "report_date": "2026-01-21",
+            "trade_name": "OPT Bladeless Stability",
+            "event_link": "https://example.test/reports/case/126402",
+        },
+        {"raw_link": "", "event_link": ""},
+    )
+
+    assert normalized["raw_link"] == ""
+    assert normalized["event_link"] == ""
+
+
+def test_tga_report_summary_parser_omits_report_cell_links() -> None:
+    html = """
+    <html><body><table>
+    <tr><th>Report #</th><th>Report Date</th><th>Trade Name</th></tr>
+    <tr><td><a href="/reports/case/95253">95253</a></td><td>29/02/2024</td><td>Laparoscopic Port and Trocar</td></tr>
+    </table></body></html>
+    """
+
+    parsed = parse_tga_report_summary_html(html, "https://example.test/search")
+
+    assert parsed[0]["report_number"] == "95253"
+    assert parsed[0]["event_link"] == ""
+
+
 def test_tga_find_urls_from_result_page() -> None:
     html = """
     <html><body>
@@ -831,6 +863,8 @@ def test_tga_direct_fetch_success_with_mock_http() -> None:
 
     assert len(result["records"]) == 1
     assert result["records"].iloc[0]["event_id"] == "95253"
+    assert result["records"].iloc[0]["raw_link"] == ""
+    assert result["records"].iloc[0]["event_link"] == ""
     assert bool(result["records"].iloc[0]["source_query_match"]) is True
     assert session.calls[2]["json"]["prefix"] == "trocar"
 
@@ -868,6 +902,7 @@ def test_tga_report_fetch_for_devices() -> None:
     df, warnings = fetch_tga_reports_for_devices(["3#24971,AU38254"], "2024-01-01", "2026-02-07", session=session, client_config=config)
 
     assert len(df) == 1
+    assert df.iloc[0]["event_link"] == ""
     assert warnings
 
 

@@ -16,7 +16,7 @@ from pipeline.pipeline import run_pipeline
 from pipeline.progress import PipelineProgress, ProgressReporter, format_seconds
 from pipeline.sources import DEFAULT_SELECTED_SOURCES, SOURCE_DISPLAY_NAMES, SOURCE_REGISTRY
 PAGE_TITLE = "Medical Device Incident Search Platform"
-APP_STATE_VERSION = "2026-06-08-complete-source-display-v1"
+APP_STATE_VERSION = "2026-06-09-tga-no-links-v1"
 DEFAULT_TROCAR_KEYWORDS = "Xcel, Versaport, VersaOne, Kii, Apple Trocar, Lina Port, Trocar, leak, fixation, puncture, death, injury, infection, blade, pyramidal tip"
 DEFAULT_SEARCH_START_DATE = date(2024, 1, 1)
 DEFAULT_SEARCH_END_DATE = date.today()
@@ -393,7 +393,7 @@ def render_source_result_tab(source_id: str, df: pd.DataFrame) -> None:
     labels = [format_record_label(index, row) for index, row in visible.reset_index(drop=True).iterrows()]
     selected_label = st.selectbox("Select a record", labels, key=f"source_selector_{source_id}")
     selected = visible.reset_index(drop=True).iloc[labels.index(selected_label)]
-    render_source_detail(source_id, selected, visible)
+    render_source_detail(source_id, selected, visible, scope=f"source_results_{source_id}")
 
 
 def render_fda_source_result_tab(source_id: str, df: pd.DataFrame) -> None:
@@ -431,7 +431,7 @@ def render_fda_source_result_tab(source_id: str, df: pd.DataFrame) -> None:
             labels = [format_record_label(index, row) for index, row in visible.reset_index(drop=True).iterrows()]
             selected_label = st.selectbox("Select a record", labels, key=f"source_selector_{source_id}_{slugify(category)}")
             selected = visible.reset_index(drop=True).iloc[labels.index(selected_label)]
-            render_source_detail(source_id, selected, visible)
+            render_source_detail(source_id, selected, visible, scope=f"source_results_{source_id}_{slugify(category)}")
 
 
 def count_fda_category(df: pd.DataFrame, category: str) -> int:
@@ -505,7 +505,7 @@ def source_table_columns(source_id: str, df: pd.DataFrame) -> list[str]:
     """Return source-specific display columns present in the dataframe."""
     mapping = {
         "FDA_MAUDE": ["fda_match_category", "event_id", "report_number", "report_date", "event_date", "search_year", "product_name", "brand_names", "manufacturer", "event_type", "category", "category_confidence", "event_link"],
-        "TGA_DAEN": ["report_number", "event_date", "year", "product_name", "manufacturer", "generic_name", "event_type", "category", "category_confidence", "event_link"],
+        "TGA_DAEN": ["report_number", "event_date", "year", "product_name", "manufacturer", "generic_name", "event_type", "category", "category_confidence"],
         "HEALTH_CANADA_MDI": ["event_id", "date_received", "year", "product_name", "generic_name", "manufacturer", "event_type", "device_problem_text", "patient_outcome", "category", "category_confidence"],
         "SWISSMEDIC_FSCA": ["event_id", "event_date", "year", "manufacturer", "product_name", "generic_name", "device_model", "event_type", "device_problem_text", "category", "category_confidence", "event_link"],
         "MHRA_FSCA": ["event_id", "event_date", "year", "manufacturer", "product_name", "device_model", "event_type", "device_problem_text", "category", "category_confidence", "event_link"],
@@ -543,7 +543,7 @@ def render_record_detail_page(filtered: pd.DataFrame) -> None:
     labels = [format_record_label(index, row) for index, row in source_df.iterrows()]
     selected_label = st.selectbox("Record", labels, key="detail_record")
     selected = source_df.iloc[labels.index(selected_label)]
-    render_source_detail(selected_source, selected, source_df)
+    render_source_detail(selected_source, selected, source_df, scope=f"record_detail_{selected_source}")
 
 
 def filter_fda_detail_category(source_df: pd.DataFrame) -> pd.DataFrame:
@@ -558,10 +558,10 @@ def filter_fda_detail_category(source_df: pd.DataFrame) -> pd.DataFrame:
     return source_df[source_df["fda_match_category"].fillna("").astype(str) == selected_category].reset_index(drop=True)
 
 
-def render_source_detail(source_id: str, record: pd.Series, context_df: pd.DataFrame | None = None) -> None:
+def render_source_detail(source_id: str, record: pd.Series, context_df: pd.DataFrame | None = None, scope: str = "detail") -> None:
     """Dispatch to a source-specific detail renderer."""
     if source_id == "HEALTH_CANADA_MDI":
-        render_health_canada_mdi_detail(record, context_df)
+        render_health_canada_mdi_detail(record, context_df, scope=scope)
         return
     renderers = {
         "FDA_MAUDE": render_fda_maude_detail,
@@ -578,13 +578,18 @@ def render_fda_maude_detail(record: pd.Series) -> None:
 
 
 def render_tga_daen_detail(record: pd.Series) -> None:
-    render_detail_fields(record, ["report_number", "event_date", "product_name", "manufacturer", "generic_name", "product_code", "event_type", "category", "category_confidence", "category_reason"])
+    render_detail_fields(
+        record,
+        ["report_number", "event_date", "product_name", "manufacturer", "generic_name", "product_code", "event_type", "category", "category_confidence", "category_reason"],
+        missing_link_message="No direct TGA DAEN case link is available for this record.",
+        render_link=False,
+    )
 
 
-def render_health_canada_mdi_detail(record: pd.Series, context_df: pd.DataFrame | None = None) -> None:
+def render_health_canada_mdi_detail(record: pd.Series, context_df: pd.DataFrame | None = None, scope: str = "detail") -> None:
     render_detail_fields(record, ["event_id", "date_received", "product_name", "generic_name", "manufacturer", "event_type", "device_problem_text", "patient_outcome", "product_code", "category"])
     render_json_section("Health Canada-specific fields", record.get("source_specific"))
-    render_health_canada_downloads(record, context_df)
+    render_health_canada_downloads(record, context_df, scope=scope)
 
 
 def render_swissmedic_fsca_detail(record: pd.Series) -> None:
@@ -671,7 +676,7 @@ def render_swissmedic_actions(record: pd.Series) -> None:
             st.link_button("Download Swissmedic file", download_link, use_container_width=True)
 
 
-def render_health_canada_downloads(record: pd.Series, context_df: pd.DataFrame | None = None) -> None:
+def render_health_canada_downloads(record: pd.Series, context_df: pd.DataFrame | None = None, scope: str = "detail") -> None:
     """Render Health Canada-specific action buttons."""
     export_df = context_df.copy() if context_df is not None and not context_df.empty else pd.DataFrame([record.to_dict()])
     export_columns = [
@@ -690,12 +695,15 @@ def render_health_canada_downloads(record: pd.Series, context_df: pd.DataFrame |
     export_columns = [column for column in export_columns if column in export_df.columns]
     csv_filename = f"health_canada_mdi_filtered_{date.today().isoformat()}.csv"
     csv_payload = export_df[export_columns].to_csv(index=False).encode("utf-8")
+    record_id = slugify(str(record.get("event_id") or record.get("report_number") or "selected"))
+    button_key = f"download_health_canada_csv_{scope}_{record_id}_{len(export_df)}"
     st.download_button(
         "Download Health Canada CSV",
         data=csv_payload,
         file_name=csv_filename,
         mime="text/csv",
         use_container_width=True,
+        key=button_key,
     )
 
 
@@ -748,6 +756,7 @@ def render_debug_raw_data(results: dict[str, pd.DataFrame]) -> None:
             file_name=f"{prefix}_{key}.csv",
             mime="text/csv",
             use_container_width=True,
+            key=f"download_debug_{key}",
         )
         st.dataframe(df.head(100), use_container_width=True, hide_index=True)
 
