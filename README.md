@@ -4,11 +4,11 @@ Python project for searching, normalizing, classifying, and exporting FDA MAUDE 
 
 Supported sources:
 
-- FDA MAUDE through the openFDA `device/event` API
-- TGA DAEN through direct online DAEN device search and print-report parsing
-- Health Canada MDI through the public Health Product Register / Medical Device Incidents search endpoint
+- FDA MAUDE 
+- TGA DAEN 
+- Health Canada MDI 
 - Swissmedic FSCA medical device recall publications
-- UK MHRA field safety notices through GOV.UK drug/device alerts
+- UK MHRA field safety notices 
 - BfArM medical device recall / manufacturer action notices
 
 ## Setup
