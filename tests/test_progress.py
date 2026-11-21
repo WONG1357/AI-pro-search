@@ -123,7 +123,8 @@ def test_run_pipeline_passes_progress_reporter(monkeypatch) -> None:
         export_results=False,
         source_options={},
     )
-    assert result["progress"].overall_status == "completed"
+    # A successful legacy connector without coverage evidence is unverified.
+    assert result["progress"].overall_status == "unverified"
     assert "FAKE" in result["progress"].sources
 
 

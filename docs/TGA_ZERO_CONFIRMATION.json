@@ -1,0 +1,48 @@
+{
+  "checked_at": "2026-11-21T11:49:14.210892+00:00",
+  "scope": "One bounded follow-up of the historical Versaport/2024 query. Report HTML was captured before the fix and replayed locally after it; no post-fix live request was made.",
+  "historical_run": "TGA_INTEGRATION_CHECK.json (preserved unchanged)",
+  "request": {
+    "keyword": "Versaport",
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "max_pages": 1,
+    "max_records": 2
+  },
+  "live_evidence": {
+    "report_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-report.aspx",
+    "views_observed": [
+      "initial search/medical device summary",
+      "List of reports postback"
+    ],
+    "http_statuses": [
+      200,
+      200
+    ],
+    "selected_devices_count_in_both_views": 5,
+    "echoed_start_date_in_both_views": "2024-01-01",
+    "echoed_end_date_in_both_views": "2024-12-31",
+    "report_total_element": "div#report-totals",
+    "report_total_in_both_views": 0,
+    "no_data_element": "p.callout.keywords",
+    "no_data_text_in_both_views": "No data was returned for your search parameters.",
+    "parsed_report_rows_in_both_views": 0
+  },
+  "conclusion": "This is a source-authoritative empty result for the selected devices and report-date interval. It is not a script/template placeholder and is not evidence of no incidents outside that query.",
+  "root_cause": "The pagination helper unconditionally warned when its first page contained no new rows; the verified-zero return path then correctly set total_available=0 but left that conflicting warning attached.",
+  "correction": "Recognize the explicit zero-report/no-data state without a pagination warning. A complete zero additionally requires the selected-device count and date echoes to match the requested query. Script/style/template/comment text is excluded from count evidence. Missing empty-state evidence or mismatched query echoes fails; any other incomplete warning prevents complete coverage.",
+  "post_fix_offline_replay_of_captured_html": {
+    "completeness": "complete",
+    "retrieved_count": 0,
+    "total_available": 0,
+    "zero_reports_confirmed": true,
+    "incomplete_warnings": []
+  },
+  "regression_tests": [
+    "verified zero without conflicting warning",
+    "zero count lacking no-data callout fails",
+    "zero with different echoed query interval fails",
+    "script/template zero is not result evidence"
+  ],
+  "source_focused_tests_passed": 92
+}

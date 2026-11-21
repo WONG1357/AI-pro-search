@@ -20,6 +20,27 @@ class SourceFetchResult:
     success: bool
     error_message: str | None = None
     warnings: list[str] = field(default_factory=list)
+    completeness: str = "unverified"
+    retrieved_count: int | None = None
+    total_available: int | None = None
+
+    def __post_init__(self) -> None:
+        """Keep legacy adapters compatible while exposing explicit coverage."""
+        attrs = self.records.attrs
+        self.completeness = attrs.get("completeness", self.completeness)
+        if not self.success and self.completeness == "unverified":
+            self.completeness = "partial" if not self.records.empty else "failed"
+        if self.completeness == "failed":
+            self.success = False
+        if self.retrieved_count is None:
+            self.retrieved_count = attrs.get("retrieved_count", len(self.records))
+        if self.total_available is None:
+            self.total_available = attrs.get("total_available")
+        self.warnings = list(dict.fromkeys([*self.warnings, *attrs.get("warnings", [])]))
+        if not self.success and not self.error_message:
+            self.error_message = self.warnings[0] if self.warnings else "Source retrieval failed"
+        if self.completeness not in {"complete", "partial", "failed", "unverified"}:
+            raise ValueError("Invalid source completeness")
 
 
 class BaseSourceConnector:
@@ -72,7 +93,7 @@ class NotImplementedSourceConnector(BaseSourceConnector):
         progress_reporter: ProgressReporter | None = None,
         **kwargs: Any,
     ) -> SourceFetchResult:
-        """Return an empty successful result with a warning for planned sources."""
+        """Return an explicit unavailable result for a planned source."""
         warning = f"{self.display_name} connector is not implemented yet."
         if progress_reporter:
             progress_reporter.update_source(
@@ -86,6 +107,7 @@ class NotImplementedSourceConnector(BaseSourceConnector):
         return SourceFetchResult(
             source_name=self.source_name,
             records=ensure_unified_columns(pd.DataFrame()),
-            success=True,
+            success=False,
+            completeness="failed",
             warnings=[warning],
         )

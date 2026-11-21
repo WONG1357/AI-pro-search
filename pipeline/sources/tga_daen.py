@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from html import unescape
 from io import BytesIO
@@ -28,6 +28,7 @@ from pipeline.config import (
 )
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
+from pipeline.source_support import request_with_retry, reject_challenge_html, with_coverage
 from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
 
 try:  # optional dependency, only needed for PDF print reports
@@ -108,30 +109,33 @@ class TgaDaenConnector(BaseSourceConnector):
                     warnings=["Using explicit TGA DAEN CSV fallback import; direct online access was not used."],
                 )
 
+            config = replace(self.client_config)
             if request_timeout:
-                self.client_config.timeout = float(request_timeout)
-            try:
-                start_text, end_text = build_tga_date_range(
-                    years,
-                    explicit_start_date=start_date,
-                    explicit_end_date=end_date,
-                )
-                result = fetch_tga_daen_direct(
-                    keywords=keywords,
-                    years=years,
-                    start_date=start_text,
-                    end_date=end_text,
-                    components=components,
-                    accident_terms=accident_terms,
-                    client_config=self.client_config,
-                    session=session,
-                    progress_reporter=progress_reporter,
-                    debug=debug,
-                    max_pages=max_pages,
-                )
-            finally:
-                if request_timeout:
-                    self.client_config.timeout = TGA_DAEN_TIMEOUT
+                config.timeout = float(request_timeout)
+            start_text, end_text = build_tga_date_range(
+                years,
+                explicit_start_date=start_date,
+                explicit_end_date=end_date,
+            )
+            result = fetch_tga_daen_direct(
+                keywords=keywords,
+                years=years,
+                start_date=start_text,
+                end_date=end_text,
+                components=components,
+                accident_terms=accident_terms,
+                client_config=config,
+                session=session,
+                progress_reporter=progress_reporter,
+                debug=debug,
+                max_pages=max_pages,
+                max_reports=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
+            )
+            result["records"].attrs.update({"effective_start": start_text, "effective_end": end_text, "date_basis": "report_date"})
+            requested_end = _normalize_date(end_date) if end_date else f"{max(years) if years else date.today().year}-12-31"
+            if requested_end > end_text:
+                result["warnings"].append(f"TGA publication lag limits available data through {end_text}; requested end date was {requested_end}")
+                result["records"].attrs["completeness"] = "partial"
 
             return SourceFetchResult(
                 source_name=self.source_name,
@@ -207,9 +211,13 @@ def build_tga_date_range(
     return start, end
 
 
-def _daen_latest_allowed_date() -> str:
-    """Mirror the visible DAEN cap: first Thursday of the current month minus three months."""
-    today = date.today()
+def _daen_latest_allowed_date(today: date | None = None) -> str:
+    """Mirror the live portal's most recent first Thursday minus three months.
+
+    Verified 2026-11-21 against initialiseDateSelection in the portal script:
+    https://apps.tga.gov.au/PROD/DEVICES/js/daen-entry-all.min.js
+    """
+    today = today or date.today()
     current_month_first = date(today.year, today.month, 1)
     first_thursday = current_month_first
     while first_thursday.weekday() != 3:
@@ -324,14 +332,21 @@ def submit_tga_daen_search(
 
 def parse_tga_search_result_counts(html: str) -> dict[str, Any]:
     """Parse counts from a DAEN result page."""
-    text = unescape(_strip_tags(html))
+    visible_html = re.sub(r"<(script|style|template)\b[^>]*>.*?</\1\s*>", " ", html, flags=re.I | re.S)
+    visible_html = re.sub(r"<!--.*?-->", " ", visible_html, flags=re.S)
+    text = unescape(_strip_tags(visible_html))
     selected_match = re.search(r"(\d+)\s+medical devices selected.*?(\d{2}/\d{2}/\d{4}).*?-\s*(\d{2}/\d{2}/\d{4})", text, re.S | re.I)
     reports_match = re.search(r"Number of reports:\s*(\d+)", text, re.I)
+    report_count = int(reports_match.group(1)) if reports_match else None
     return {
         "selected_devices_count": int(selected_match.group(1)) if selected_match else None,
-        "expected_report_count": int(reports_match.group(1)) if reports_match else None,
+        "expected_report_count": report_count,
         "search_start_date": _to_iso_date(selected_match.group(2)) if selected_match else None,
         "search_end_date": _to_iso_date(selected_match.group(3)) if selected_match else None,
+        "zero_reports_confirmed": bool(
+            report_count == 0 and selected_match
+            and re.search(r"No\s+data\s+was\s+returned\s+for\s+your\s+search\s+parameters", text, re.I)
+        ),
     }
 
 
@@ -382,13 +397,19 @@ def fetch_tga_print_report(
     return response.content, content_type, response.url
 
 
-def extract_text_from_tga_pdf(pdf_bytes: bytes) -> str:
+def extract_text_from_tga_pdf(pdf_bytes: bytes, max_pages: int | None = None,
+                              warnings: list[str] | None = None) -> str:
     """Extract text from a DAEN PDF using pypdf."""
     if PdfReader is None:
         raise RuntimeError("pypdf is required to parse TGA DAEN PDF print reports")
     reader = PdfReader(BytesIO(pdf_bytes))
     pages = []
-    for page in reader.pages:
+    page_limit = max_pages if max_pages is not None else len(reader.pages)
+    if page_limit < 1:
+        raise ValueError("TGA PDF page limit must be positive")
+    if len(reader.pages) > page_limit and warnings is not None:
+        warnings.append(f"Stopped at max_pages={page_limit} PDF pages; TGA coverage incomplete")
+    for page in reader.pages[:page_limit]:
         pages.append(page.extract_text() or "")
     return "\n".join(pages)
 
@@ -465,7 +486,9 @@ def parse_tga_report_summary_html(html: str, base_url: str = "") -> list[dict[st
 def normalize_tga_daen_report(raw_report: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     """Normalize one TGA DAEN report row to the unified schema."""
     report_number = _first_value(raw_report, ["report_number", "report #", "report#", "report", "case_number", "event_id"])
-    report_date = format_fda_date(_first_value(raw_report, ["date", "report_date", "event_date"]))
+    report_date = format_fda_date(_first_value(raw_report, ["report_date", "date", "notification_date", "date_received"]))
+    date_received = format_fda_date(_first_value(raw_report, ["date_received", "received_date"])) or report_date
+    event_date = format_fda_date(_first_value(raw_report, ["date_of_event", "actual_event_date", "event_date"]))
     trade_name = _first_value(raw_report, ["trade_name", "product_name", "product", "device", "name"])
     model_ref = _first_value(raw_report, ["model/ref", "model_ref", "model", "device_model"])
     event_description = _first_value(raw_report, ["event description", "event_description", "description", "summary", "narrative_text"])
@@ -482,11 +505,12 @@ def normalize_tga_daen_report(raw_report: dict[str, Any], metadata: dict[str, An
         "country": TGA_DAEN_COUNTRY,
         "event_id": report_number,
         "report_number": report_number,
-        "date_of_event": report_date,
-        "date_received": "",
-        "event_date": report_date,
+        "date_of_event": event_date,
+        "report_date": report_date,
+        "date_received": date_received,
+        "event_date": event_date,
         "year": parse_year_from_date(report_date),
-        "received_year": None,
+        "received_year": parse_year_from_date(date_received),
         "manufacturer": manufacturer,
         "product_name": trade_name,
         "brand_names": trade_name,
@@ -501,16 +525,11 @@ def normalize_tga_daen_report(raw_report: dict[str, Any], metadata: dict[str, An
         "raw_link": raw_link,
         "event_link": event_link,
         "record_hash": "",
+        "raw_record": json.dumps(raw_report, ensure_ascii=False, default=str),
+        "source_specific": json.dumps({**metadata, "date_basis": "report_date", "occurrence_date_basis": "explicit_occurrence_field" if event_date else "unknown"}, ensure_ascii=False, default=str),
     }
     normalized["record_hash"] = _record_hash(normalized)
     return normalized
-
-
-def load_tga_daen_csv(csv_path: str | Any) -> pd.DataFrame:
-    """Optional fallback/debug CSV loader for TGA DAEN exports."""
-    raw = pd.read_csv(csv_path)
-    normalized = [normalize_tga_daen_record(row.to_dict()) for _, row in raw.iterrows()]
-    return ensure_unified_columns(pd.DataFrame(normalized))
 
 
 def fetch_tga_daen_direct(
@@ -533,13 +552,18 @@ def fetch_tga_daen_direct(
     warnings: list[str] = []
     terms = _merge_terms(keywords, components, accident_terms)
     years = years or []
-    if start_date is None or end_date is None:
-        start_text, end_text = build_tga_date_range(years)
-    else:
-        start_text = _normalize_date(start_date)
-        end_text = _normalize_date(end_date)
-        if start_text > end_text:
-            raise ValueError(f"Invalid TGA date range: start={start_text} end={end_text}")
+    start_text, end_text = build_tga_date_range(years, explicit_start_date=start_date, explicit_end_date=end_date)
+    requested_end = _normalize_date(end_date) if end_date else f"{max(years) if years else date.today().year}-12-31"
+    lag_limited = requested_end > end_text
+    if lag_limited:
+        warnings.append(f"TGA coverage is incomplete: publication lag limits available data through {end_text}; requested end date was {requested_end}")
+    date_metadata = {
+        "search_start_date": start_text,
+        "search_end_date": end_text,
+        "effective_start": start_text,
+        "effective_end": end_text,
+        "date_basis": "report_date",
+    }
 
     start_dt = date.fromisoformat(start_text)
     end_dt = date.fromisoformat(end_text)
@@ -580,7 +604,9 @@ def fetch_tga_daen_direct(
             f"TGA DAEN found 0 device matches for keywords={keywords} date_range={start_text} to {end_text}"
         )
         empty_df = ensure_unified_columns(pd.DataFrame())
-        return {"records": empty_df, "warnings": warnings, "metadata": {}, "raw_text": ""}
+        with_coverage(empty_df, "partial" if lag_limited else "unverified", warnings)
+        empty_df.attrs.update(date_metadata)
+        return {"records": empty_df, "warnings": warnings, "metadata": date_metadata, "raw_text": ""}
 
     selected_device_ids = _extract_device_ids(device_matches)
     if progress_reporter:
@@ -668,7 +694,8 @@ def fetch_tga_daen_direct(
         debug=debug,
         progress_reporter=progress_reporter,
         max_pages=max_pages,
-        max_records=None,
+        max_records=max_reports,
+        warnings=warnings,
     )
     if extracted_text and "pdf" in content_type:
         warnings.append(f"pdf_text_length={len(extracted_text)}")
@@ -681,11 +708,24 @@ def fetch_tga_daen_direct(
         )
 
     if not raw_rows:
+        expected = search_counts.get("expected_report_count")
+        verified_empty = (
+            expected == 0 and search_counts.get("zero_reports_confirmed")
+            and search_counts.get("search_start_date") == start_text
+            and search_counts.get("search_end_date") == end_text
+            and search_counts.get("selected_devices_count") == len(selected_device_ids)
+        )
+        if not verified_empty:
+            raise RuntimeError(f"TGA report parsing yielded zero rows while expected count is {expected!r}; this is not a verified empty result for the requested query")
         warnings.append(
             f"TGA DAEN found {len(selected_device_ids)} selected devices but returned 0 reports for date range {start_text} to {end_text}"
         )
         empty_df = ensure_unified_columns(pd.DataFrame())
+        incomplete = lag_limited or any("incomplete" in message.lower() for message in warnings)
+        with_coverage(empty_df, "partial" if incomplete else "complete", warnings, total_available=0)
+        empty_df.attrs.update(date_metadata)
         metadata = {
+            **date_metadata,
             "raw_link": "",
             "event_link": "",
             "print_report_link": final_url,
@@ -693,6 +733,7 @@ def fetch_tga_daen_direct(
             "search_end_date": end_text,
             "selected_devices_count": search_counts.get("selected_devices_count"),
             "expected_report_count": search_counts.get("expected_report_count"),
+            "zero_reports_confirmed": True,
             "report_generation_date": _find_report_generation_date(extracted_text or ""),
         }
         return {"records": empty_df, "warnings": warnings, "metadata": metadata, "raw_text": extracted_text or ""}
@@ -705,6 +746,7 @@ def fetch_tga_daen_direct(
         )
 
     metadata = {
+        **date_metadata,
         "raw_link": "",
         "event_link": "",
         "print_report_link": final_url,
@@ -730,8 +772,8 @@ def fetch_tga_daen_direct(
         warnings.append(f"Stopped at max_reports={max_reports}")
     if max_pages and extracted_text:
         warnings.append(f"max_pages={max_pages}")
-    if (start_date is not None or end_date is not None) and not df.empty:
-        df = _filter_by_date_range(df, start_date, end_date)
+    if not df.empty:
+        df = _filter_by_date_range(df, start_text, end_text)
 
     parsed_count = len(df)
     expected_count = search_counts.get("expected_report_count")
@@ -758,6 +800,12 @@ def fetch_tga_daen_direct(
             f"TGA DAEN parsed {parsed_count} reports which exceeds the expected report count {expected_count}; duplicate suppression may be incomplete."
         )
 
+    incomplete = any("incomplete" in message.lower() or "Stopped at" in message for message in warnings)
+    if expected_count is not None and parsed_count != expected_count:
+        incomplete = True
+    coverage = "partial" if incomplete else "complete" if expected_count is not None else "unverified"
+    with_coverage(df, coverage, warnings, retrieved_count=len(raw_rows), total_available=expected_count)
+    df.attrs.update(date_metadata)
     return {"records": df, "warnings": warnings, "metadata": metadata, "raw_text": extracted_text or ""}
 
 
@@ -771,14 +819,19 @@ def _fetch_tga_report_rows(
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
     max_records: int | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Fetch and parse all paginated DAEN report rows from the summary table."""
     all_rows: list[dict[str, Any]] = []
+    warnings = warnings if warnings is not None else []
     combined_text = ""
 
     if "pdf" in content_type or report_response_content[:4] == b"%PDF":
-        combined_text = extract_text_from_tga_pdf(report_response_content)
+        combined_text = extract_text_from_tga_pdf(report_response_content, max_pages=max_pages or 100, warnings=warnings)
         rows = parse_tga_print_report_text(combined_text, debug=debug)
+        if max_records and len(rows) > max_records:
+            warnings.append(f"Stopped at max_records={max_records}; TGA coverage incomplete")
+            rows = rows[:max_records]
         return rows, combined_text
 
     html = report_response_content.decode("utf-8", errors="replace")
@@ -786,12 +839,16 @@ def _fetch_tga_report_rows(
     seen_pages: set[str] = set()
     page_index = 1
     max_pages = max_pages or 100
+    if max_pages < 1 or (max_records is not None and max_records < 1):
+        raise ValueError("TGA retrieval limits must be positive")
     last_page_hash = None
 
     while page_index <= max_pages:
         page_hash = hashlib.sha256(current_html.encode("utf-8")).hexdigest()
-        if page_hash == last_page_hash:
+        if page_hash in seen_pages:
+            warnings.append("TGA repeated a report page; coverage incomplete")
             break
+        seen_pages.add(page_hash)
         last_page_hash = page_hash
         rows = parse_tga_report_summary_html(current_html) or parse_tga_print_report_html(current_html, debug=debug)
         if not rows:
@@ -804,6 +861,8 @@ def _fetch_tga_report_rows(
                 new_rows.append(row)
                 seen_numbers.add(report_number)
         if not new_rows:
+            if all_rows or not parse_tga_search_result_counts(current_html).get("zero_reports_confirmed"):
+                warnings.append("TGA report page had no new report rows; coverage incomplete")
             break
         all_rows.extend(new_rows)
         if progress_reporter:
@@ -814,6 +873,8 @@ def _fetch_tga_report_rows(
                 message=f"TGA_DAEN parsed {len(all_rows)} summary report rows on page {page_index}",
             )
         if max_records and len(all_rows) >= max_records:
+            if len(all_rows) > max_records or _has_tga_paging_control(current_html, "PageNext"):
+                warnings.append(f"Stopped at max_records={max_records}; TGA coverage incomplete")
             all_rows = all_rows[:max_records]
             break
         current_status = _extract_tga_page_status(current_html)
@@ -821,8 +882,16 @@ def _fetch_tga_report_rows(
             break
         if not _has_tga_paging_control(current_html, "PageNext"):
             break
-        next_html = _advance_tga_report_page(session, current_html, report_url, config, "PageNext", debug=debug)
+        if page_index >= max_pages:
+            warnings.append(f"Stopped at max_pages={max_pages}; TGA coverage incomplete")
+            break
+        try:
+            next_html = _advance_tga_report_page(session, current_html, report_url, config, "PageNext", debug=debug)
+        except (requests.RequestException, RuntimeError) as exc:
+            warnings.append(f"TGA report pagination failed; coverage incomplete: {type(exc).__name__}: {exc}")
+            break
         if not next_html or next_html == current_html:
+            warnings.append("TGA next-page navigation did not advance; coverage incomplete")
             break
         current_html = next_html
         page_index += 1
@@ -940,13 +1009,11 @@ def fetch_tga_reports_for_devices(
         debug=debug,
         client_config=config,
     )
-    if "pdf" in content_type or content[:4] == b"%PDF":
-        text = extract_text_from_tga_pdf(content)
-        raw_rows = parse_tga_print_report_text(text, debug=debug)
-    else:
-        html = content.decode("utf-8", errors="replace")
-        raw_rows = parse_tga_print_report_html(html, debug=debug)
-        text = _strip_tags(html)
+    raw_rows, text = _fetch_tga_report_rows(session, content, content_type, final_url, config,
+                                            debug=debug, progress_reporter=progress_reporter,
+                                            max_pages=max_pages, max_records=max_records, warnings=warnings)
+    if not raw_rows and counts.get("expected_report_count") != 0:
+        raise RuntimeError("TGA report parsing yielded no rows without a verified zero count")
     metadata = {
         "raw_link": "",
         "event_link": "",
@@ -954,7 +1021,8 @@ def fetch_tga_reports_for_devices(
         "selected_devices_count": counts.get("selected_devices_count"),
     }
     records = ensure_unified_columns(pd.DataFrame([normalize_tga_daen_report(row, metadata) for row in raw_rows]))
-    return records, warnings
+    coverage = "partial" if any("incomplete" in message for message in warnings) else "unverified"
+    return with_coverage(records, coverage, warnings), warnings
 
 
 def parse_tga_report_response(response: requests.Response) -> dict[str, Any]:
@@ -962,23 +1030,31 @@ def parse_tga_report_response(response: requests.Response) -> dict[str, Any]:
 
 
 def parse_tga_device_response(response: requests.Response) -> dict[str, Any]:
+    if response.status_code >= 400:
+        raise RuntimeError(f"TGA device search failed with HTTP {response.status_code}")
     text = response.text or ""
     content_type = response.headers.get("Content-Type", "").lower()
     debug: dict[str, Any] = {"content_type": content_type, "response_snippet": text[:1000]}
     try:
         payload = response.json()
     except ValueError:
-        payload = {}
+        raise RuntimeError("TGA device search returned non-JSON content") from None
 
     records: list[dict[str, Any]] = []
     if isinstance(payload, dict):
-        value = payload.get("d")
+        if "d" not in payload:
+            raise RuntimeError("TGA device response is missing the d field")
+        value = payload["d"]
         if isinstance(value, list):
             records = [item for item in value if isinstance(item, dict)]
         elif isinstance(value, dict):
             records = [value]
+        else:
+            raise RuntimeError("TGA device response d field is not a list or object")
     elif isinstance(payload, list):
         records = [item for item in payload if isinstance(item, dict)]
+    else:
+        raise RuntimeError("TGA device response has an unexpected shape")
     debug["record_count"] = len(records)
     return {"records": records, "debug": debug, "raw": payload or text}
 
@@ -989,9 +1065,10 @@ def parse_tga_daen_response(response: requests.Response) -> dict[str, Any]:
 
 def normalize_tga_daen_record(record: dict[str, Any]) -> dict[str, object]:
     event_id = _first_value(record, ["event_id", "case_number", "report_id", "reference", "id"])
-    date_of_event = format_fda_date(_first_value(record, ["event_date", "date", "notification_date", "report_date"]))
-    date_received = format_fda_date(_first_value(record, ["date_received", "received_date", "notification_date"]))
-    event_date = date_of_event or date_received
+    date_of_event = format_fda_date(_first_value(record, ["date_of_event", "actual_event_date", "event_date"]))
+    report_date = format_fda_date(_first_value(record, ["report_date", "date", "notification_date", "date_received", "received_date"]))
+    date_received = format_fda_date(_first_value(record, ["date_received", "received_date"])) or report_date
+    event_date = date_of_event
     product_name = _first_value(record, ["product_name", "device", "product", "trade_name", "DisplayName", "ProductName"])
     manufacturer = _first_value(record, ["manufacturer", "sponsor", "company", "Manufacturer"])
     brand_names = _first_value(record, ["brand_names", "brand_name", "trade_name"])
@@ -1008,9 +1085,10 @@ def normalize_tga_daen_record(record: dict[str, Any]) -> dict[str, object]:
         "event_id": event_id,
         "report_number": event_id,
         "date_of_event": date_of_event,
+        "report_date": report_date,
         "date_received": date_received,
         "event_date": event_date,
-        "year": parse_year_from_date(event_date),
+        "year": parse_year_from_date(report_date or event_date),
         "received_year": parse_year_from_date(date_received),
         "manufacturer": manufacturer,
         "product_name": product_name,
@@ -1026,6 +1104,8 @@ def normalize_tga_daen_record(record: dict[str, Any]) -> dict[str, object]:
         "raw_link": "",
         "event_link": "",
         "record_hash": "",
+        "raw_record": json.dumps(record, ensure_ascii=False, default=str),
+        "source_specific": json.dumps({"ingestion": "explicit_csv_import", "date_basis": "report_date", "occurrence_date_basis": "explicit_occurrence_field" if event_date else "unknown"}, ensure_ascii=False),
     }
     normalized["record_hash"] = _record_hash(normalized)
     return normalized
@@ -1203,7 +1283,7 @@ def _normalize_report_row(raw_report: dict[str, Any]) -> dict[str, Any]:
         normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
         normalized_keys[normalized_key] = value
     report_number = _first_value(normalized_keys, ["report_number", "report", "case_number", "event_id"])
-    report_date = format_fda_date(_first_value(normalized_keys, ["date", "report_date", "event_date"]))
+    report_date = format_fda_date(_first_value(normalized_keys, ["report_date", "date", "notification_date", "date_received"]))
     trade_name = _first_value(normalized_keys, ["trade_name", "product_name", "product", "device", "name"])
     model_ref = _first_value(normalized_keys, ["model_ref", "model/ref", "model", "device_model"])
     event_description = _first_value(normalized_keys, ["event_description", "event description", "description", "summary", "narrative_text"])
@@ -1211,6 +1291,8 @@ def _normalize_report_row(raw_report: dict[str, Any]) -> dict[str, Any]:
     return {
         "report_number": report_number,
         "report_date": report_date,
+        "date_received": _first_value(normalized_keys, ["date_received", "received_date"]),
+        "date_of_event": _first_value(normalized_keys, ["date_of_event", "actual_event_date", "event_date"]),
         "trade_name": trade_name,
         "model_ref": model_ref,
         "event_description": event_description,
@@ -1364,17 +1446,14 @@ def _request(
     debug: bool = False,
     label: str = "",
 ) -> requests.Response:
-    request_method = getattr(session, "request", None)
-    if callable(request_method):
-        response = request_method(method, url, headers=headers, json=json, data=data, timeout=timeout)
-    else:
-        method_lower = method.lower()
-        if method_lower == "get" and hasattr(session, "get"):
-            response = session.get(url, headers=headers, timeout=timeout)
-        elif method_lower == "post" and hasattr(session, "post"):
-            response = session.post(url, headers=headers, json=json, data=data, timeout=timeout)
-        else:
-            raise AttributeError("Session object does not support request/get/post methods")
+    kwargs: dict[str, Any] = {"headers": headers, "timeout": timeout}
+    if json is not None:
+        kwargs["json"] = json
+    if data is not None:
+        kwargs["data"] = data
+    response = request_with_retry(session, method, url, **kwargs)
+    if "text/html" in response.headers.get("Content-Type", "").lower():
+        reject_challenge_html(response.text, "TGA")
     if debug:
         logger.debug(
             "%s method=%s url=%s status=%s content_type=%s params=%s json=%s data=%s snippet=%s",
@@ -1528,4 +1607,6 @@ def _filter_records(df: pd.DataFrame, keywords: list[str], years: list[int]) -> 
 def _filter_by_date_range(df: pd.DataFrame, start_date: object | None, end_date: object | None) -> pd.DataFrame:
     if df.empty or (start_date is None and end_date is None):
         return df
-    return df[df["event_date"].apply(lambda value: date_or_year_in_range(value, start_date, end_date))].copy()
+    report_dates = df["report_date"].fillna("").astype(str)
+    report_dates = report_dates.where(report_dates.str.strip() != "", df["date_received"])
+    return df[report_dates.apply(lambda value: date_or_year_in_range(value, start_date, end_date))].copy()

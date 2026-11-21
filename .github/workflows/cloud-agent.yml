@@ -1,0 +1,110 @@
+name: Run OpenAI cloud surveillance agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Search request: device, dates, regions, and output. Inputs are visible in this repository.'
+        required: true
+        type: string
+      model:
+        description: 'Model with Agents API access in your OpenAI project'
+        required: true
+        default: gpt-6-astra
+        type: string
+      export_reports:
+        description: 'Also make result files downloadable as repository Actions artifacts (same access as this repository)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TASK_TEXT: ${{ inputs.task }}
+      AGENT_MODEL: ${{ inputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-agent.txt
+      - name: Install controller
+        run: python -m pip install -r requirements-agent.txt
+      - name: Prepare task without shell interpolation
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          if not os.environ.get('OPENAI_API_KEY'):
+              raise SystemExit('OPENAI_API_KEY is not configured in repository secrets.')
+          Path(os.environ['RUNNER_TEMP'], 'task.txt').write_text(os.environ['TASK_TEXT'], encoding='utf-8')
+          PY
+      - name: Launch one OpenAI-hosted task
+        run: python -m cloud_agent start --task-file "$RUNNER_TEMP/task.txt" --model "$AGENT_MODEL" --state .agent-state/run.json --detach
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-agent-initial-recovery-${{ github.run_id }}
+          path: .agent-state/run.json
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Observe existing task to completion
+        run: |
+          python - <<'PY'
+          import time
+          from pathlib import Path
+          from cloud_agent.hosted import get_status
+          state_path = Path('.agent-state/run.json')
+          deadline = time.monotonic() + 900
+          while time.monotonic() < deadline:
+              state = get_status(state_path)
+              status = state.get('status')
+              if status == 'completed':
+                  print('OpenAI turn completed. Files remain in its cloud session; inspect the source coverage before treating the search as successful.')
+                  break
+              if status in {'failed', 'cancelled', 'requires_action', 'ambiguous_submission'}:
+                  raise SystemExit('Cloud task requires attention: ' + str(status))
+              time.sleep(10)
+          else:
+              raise SystemExit('Observation timed out. The existing cloud task may still run; recover using the saved state, do not resubmit.')
+          PY
+      - name: Download and verify the actual report files
+        run: python -m cloud_agent download --state .agent-state/run.json --output agent-results
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.export_reports
+        with:
+          name: surveillance-reports-${{ github.run_id }}
+          path: agent-results/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Save recovery IDs without publishing reports or prompt text
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('.agent-state/run.json')
+          if path.exists():
+              data = json.loads(path.read_text())
+              data['output_text'] = ''
+              data.pop('artifacts', None)
+              data.pop('artifacts_downloaded_at', None)
+              path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-agent-recovery-${{ github.run_id }}
+          path: .agent-state/run.json
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: ignore

@@ -11,16 +11,18 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from pipeline.config import EXPORTS_DIR
+from pipeline.config import DEFAULT_KEYWORDS, EXPORTS_DIR
+from pipeline.export import spreadsheet_safe_frame
 from pipeline.pipeline import run_pipeline
 from pipeline.progress import PipelineProgress, ProgressReporter, format_seconds
 from pipeline.sources import DEFAULT_SELECTED_SOURCES, SOURCE_DISPLAY_NAMES, SOURCE_REGISTRY
 PAGE_TITLE = "Medical Device Incident Search Platform"
 APP_STATE_VERSION = "2026-06-09-tga-no-links-v1"
-DEFAULT_TROCAR_KEYWORDS = "Xcel, Versaport, VersaOne, Kii, Apple Trocar, Lina Port, Trocar, leak, fixation, puncture, death, injury, infection, blade, pyramidal tip"
+DEFAULT_TROCAR_KEYWORDS = ", ".join(DEFAULT_KEYWORDS)
 DEFAULT_SEARCH_START_DATE = date(2024, 1, 1)
 DEFAULT_SEARCH_END_DATE = date.today()
 DEFAULT_REQUEST_TIMEOUT = 60
+FDA_MATCH_CATEGORIES = ["Model number matches", "Product code matches", "Brand name matches", "Generic name matches", "Narrative matches", "Other matches"]
 PRIMARY_COLUMNS = [
     "source",
     "event_id",
@@ -43,6 +45,7 @@ FIELD_LABELS = {
     "year": "Year",
     "received_year": "Report year",
     "search_date": "Search date",
+    "search_date_basis": "Search date basis",
     "search_year": "Search year",
     "product_name": "Product name",
     "brand_names": "Brand / generic names",
@@ -72,7 +75,7 @@ def main() -> None:
     st.title(PAGE_TITLE)
 
     sidebar_state = render_sidebar()
-    st.subheader(f"Current search: {sidebar_state['device_name']}")
+    st.subheader(f"Search: {st.session_state.get('device_name', sidebar_state['device_name'])}")
 
     if sidebar_state["run_search"]:
         execute_search(sidebar_state)
@@ -124,12 +127,19 @@ def render_sidebar() -> dict[str, object]:
             key="search_date_range",
         )
         search_start_date, search_end_date = normalize_search_date_range(search_date_range)
+        with st.expander("Request limits"):
+            request_timeout = st.number_input("Request timeout (seconds)", min_value=5, max_value=120, value=20)
+            max_pages = st.number_input("Maximum pages per source query", min_value=1, max_value=100, value=20)
+            max_records = st.number_input("Maximum records per source", min_value=1, max_value=10000, value=2000)
+            st.caption("A reached limit is reported as partial coverage.")
         run_search = st.button("Run Search", type="primary", use_container_width=True)
 
     keywords = parse_keyword_text(keyword_text)
     components = parse_keyword_text(component_text)
     accident_terms = parse_keyword_text(accident_text)
-    search_terms = merge_unique_terms(keywords, components, accident_terms)
+    # Component and accident terms describe classification, not an alternative
+    # device identity. OR-ing 'injury' into retrieval admitted unrelated devices.
+    search_terms = keywords
     return {
         "device_profile": device_profile,
         "device_name": device_name,
@@ -140,8 +150,9 @@ def render_sidebar() -> dict[str, object]:
         "start_date": search_start_date,
         "end_date": search_end_date,
         "selected_sources": selected_sources,
-        "request_timeout": DEFAULT_REQUEST_TIMEOUT,
-        "max_pages": None,
+        "request_timeout": request_timeout,
+        "max_pages": max_pages,
+        "max_records": max_records,
         "debug_logs": False,
         "run_search": run_search,
     }
@@ -167,7 +178,7 @@ def execute_search(search_state: dict[str, object]) -> None:
     end_date = search_state["end_date"]
 
     if not keywords:
-        st.error("Enter at least one keyword, component, or accident term.")
+        st.error("Enter at least one device keyword. Component and accident terms are used for classification.")
         return
     if start_date is None or end_date is None:
         st.error("Select a valid date range.")
@@ -187,6 +198,7 @@ def execute_search(search_state: dict[str, object]) -> None:
     source_options["_global"] = {
         "request_timeout": search_state.get("request_timeout"),
         "max_pages": search_state.get("max_pages"),
+        "max_records": search_state.get("max_records"),
         "debug": search_state.get("debug_logs"),
     }
 
@@ -237,7 +249,13 @@ def execute_search(search_state: dict[str, object]) -> None:
     st.session_state["results"] = results
     st.session_state["device_name"] = search_state["device_name"]
     st.session_state["export_prefix"] = export_prefix
-    st.success("Search completed.")
+    status = results["progress"].overall_status
+    if status == "completed":
+        st.success("Search finished. Declared source queries completed.")
+    elif status == "failed":
+        st.error("Search failed. The result cannot establish whether matching records exist.")
+    else:
+        st.warning(f"Search finished with {status} source coverage. Review the source status before using counts.")
 
 
 def years_from_date_range(start_date: date, end_date: date) -> list[int]:
@@ -271,7 +289,13 @@ def render_dashboard(results: dict[str, pd.DataFrame]) -> None:
     filtered = results.get("filtered", pd.DataFrame())
     all_raw = results.get("all_raw", pd.DataFrame())
     if filtered.empty and all_raw.empty:
-        st.warning("No matching records were found for this search.")
+        statuses = results.get("source_status", pd.DataFrame())
+        complete = not statuses.empty and statuses["completeness"].eq("complete").all()
+        if complete:
+            st.info("The completed source queries returned no matching records. This is not proof that no events occurred.")
+        else:
+            st.warning("No records are available, and source coverage is incomplete or unverified. Do not interpret this as zero incidents.")
+        render_debug_raw_data(results)
         return
 
     overview_tab, source_tab, detail_tab, audit_tab, debug_tab = st.tabs(
@@ -293,6 +317,10 @@ def render_source_messages(results: dict[str, pd.DataFrame]) -> None:
     """Show connector warnings and errors without blocking the dashboard."""
     warnings = results.get("source_warnings", pd.DataFrame())
     errors = results.get("source_errors", pd.DataFrame())
+    statuses = results.get("source_status", pd.DataFrame())
+    if not statuses.empty:
+        st.caption("Source coverage for this search")
+        st.dataframe(statuses, use_container_width=True, hide_index=True)
     audit, warnings = split_source_audit_messages(warnings)
     if warnings.empty and errors.empty and audit.empty:
         return
@@ -368,7 +396,8 @@ def render_source_result_tab(source_id: str, df: pd.DataFrame) -> None:
 
     metric_cols = st.columns(4)
     metric_cols[0].metric("Records", f"{len(df):,}")
-    metric_cols[1].metric("Years", f"{df['year'].nunique() if 'year' in df.columns else 0:,}")
+    year_column = display_year_column(df)
+    metric_cols[1].metric("Search years", f"{df[year_column].nunique() if year_column in df.columns else 0:,}")
     metric_cols[2].metric("Categories", f"{df['category'].nunique() if 'category' in df.columns else 0:,}")
     metric_cols[3].metric("With links", f"{count_rows_with_links(df):,}")
 
@@ -398,7 +427,7 @@ def render_source_result_tab(source_id: str, df: pd.DataFrame) -> None:
 
 def render_fda_source_result_tab(source_id: str, df: pd.DataFrame) -> None:
     """Render FDA MAUDE records grouped by openFDA match category."""
-    order = ["Brand name matches", "Generic name matches", "Narrative matches", "Other matches"]
+    order = FDA_MATCH_CATEGORIES
     categories = [category for category in order if (df.get("fda_match_category", pd.Series(dtype=str)).fillna("").astype(str) == category).any()]
     extra_categories = [
         category
@@ -465,7 +494,7 @@ def apply_source_filters(source_id: str, df: pd.DataFrame) -> pd.DataFrame:
     with columns[2]:
         query = st.text_input("Text search", key=f"filter_text_{source_id}")
 
-    if selected_categories and "category" in filtered.columns:
+    if "category" in filtered.columns:
         filtered = filtered[filtered["category"].isin(selected_categories)]
     if selected_values and field in filtered.columns:
         filtered = filtered[filtered[field].fillna("").astype(str).isin(selected_values)]
@@ -505,19 +534,19 @@ def source_table_columns(source_id: str, df: pd.DataFrame) -> list[str]:
     """Return source-specific display columns present in the dataframe."""
     mapping = {
         "FDA_MAUDE": ["fda_match_category", "event_id", "report_number", "report_date", "event_date", "search_year", "product_name", "brand_names", "manufacturer", "event_type", "category", "category_confidence", "event_link"],
-        "TGA_DAEN": ["report_number", "event_date", "year", "product_name", "manufacturer", "generic_name", "event_type", "category", "category_confidence"],
-        "HEALTH_CANADA_MDI": ["event_id", "date_received", "year", "product_name", "generic_name", "manufacturer", "event_type", "device_problem_text", "patient_outcome", "category", "category_confidence"],
+        "TGA_DAEN": ["report_number", "report_date", "event_date", "search_year", "product_name", "manufacturer", "generic_name", "event_type", "category", "category_confidence"],
+        "HEALTH_CANADA_MDI": ["event_id", "date_received", "search_year", "product_name", "generic_name", "manufacturer", "event_type", "device_problem_text", "patient_outcome", "category", "category_confidence"],
         "SWISSMEDIC_FSCA": ["event_id", "event_date", "year", "manufacturer", "product_name", "generic_name", "device_model", "event_type", "device_problem_text", "category", "category_confidence", "event_link"],
         "MHRA_FSCA": ["event_id", "event_date", "year", "manufacturer", "product_name", "device_model", "event_type", "device_problem_text", "category", "category_confidence", "event_link"],
         "BFARM_RECALLS": ["event_id", "event_date", "year", "manufacturer", "product_name", "event_type", "device_problem_text", "category", "category_confidence", "event_link"],
     }
-    preferred = mapping.get(source_id, PRIMARY_COLUMNS)
+    preferred = mapping.get(source_id, PRIMARY_COLUMNS) + ["search_date", "search_date_basis"]
     return [column for column in preferred if column in df.columns and column_has_values(df[column])]
 
 
 def column_has_values(values: pd.Series) -> bool:
     """Return whether a dataframe column has displayable content."""
-    return bool(values.fillna("").astype(str).str.strip().ne("").any())
+    return bool(values.astype("string").fillna("").str.strip().ne("").any())
 
 
 def display_year_column(df: pd.DataFrame) -> str:
@@ -549,7 +578,7 @@ def render_record_detail_page(filtered: pd.DataFrame) -> None:
 def filter_fda_detail_category(source_df: pd.DataFrame) -> pd.DataFrame:
     categories = [
         category
-        for category in ["Brand name matches", "Generic name matches", "Narrative matches", "Other matches"]
+        for category in FDA_MATCH_CATEGORIES
         if (source_df.get("fda_match_category", pd.Series(dtype=str)).fillna("").astype(str) == category).any()
     ]
     if not categories:
@@ -580,7 +609,7 @@ def render_fda_maude_detail(record: pd.Series) -> None:
 def render_tga_daen_detail(record: pd.Series) -> None:
     render_detail_fields(
         record,
-        ["report_number", "event_date", "product_name", "manufacturer", "generic_name", "product_code", "event_type", "category", "category_confidence", "category_reason"],
+        ["report_number", "report_date", "event_date", "search_date_basis", "product_name", "manufacturer", "generic_name", "product_code", "event_type", "category", "category_confidence", "category_reason"],
         missing_link_message="No direct TGA DAEN case link is available for this record.",
         render_link=False,
     )
@@ -694,7 +723,7 @@ def render_health_canada_downloads(record: pd.Series, context_df: pd.DataFrame |
     ]
     export_columns = [column for column in export_columns if column in export_df.columns]
     csv_filename = f"health_canada_mdi_filtered_{date.today().isoformat()}.csv"
-    csv_payload = export_df[export_columns].to_csv(index=False).encode("utf-8")
+    csv_payload = spreadsheet_safe_frame(export_df[export_columns]).to_csv(index=False).encode("utf-8-sig")
     record_id = slugify(str(record.get("event_id") or record.get("report_number") or "selected"))
     button_key = f"download_health_canada_csv_{scope}_{record_id}_{len(export_df)}"
     st.download_button(
@@ -746,13 +775,17 @@ def render_record_count_audit(results: dict[str, pd.DataFrame]) -> None:
 def render_debug_raw_data(results: dict[str, pd.DataFrame]) -> None:
     """Render debug and raw data downloads."""
     prefix = st.session_state.get("export_prefix", f"medical_device_incident_report_{date.today().isoformat()}")
-    for key in ["all_raw", "filtered", "summary_year_category", "summary_source_category", "source_warnings", "source_errors"]:
+    for key, label, mime in [("excel", "Download Excel report", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), ("manifest", "Download evidence manifest", "application/json"), ("raw_jsonl", "Download complete raw records", "application/x-ndjson")]:
+        file = results.get("export_files", {}).get(key)
+        if file is not None and Path(file).is_file():
+            st.download_button(label, data=Path(file).read_bytes(), file_name=Path(file).name, mime=mime, key=f"artifact_{key}")
+    for key in ["all_raw", "filtered", "summary_year_category", "summary_source_category", "source_status", "source_warnings", "source_errors"]:
         df = results.get(key, pd.DataFrame())
         st.subheader(key)
         st.caption(f"{len(df):,} rows")
         st.download_button(
             f"Download {key} CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
+            data=spreadsheet_safe_frame(df).to_csv(index=False).encode("utf-8-sig"),
             file_name=f"{prefix}_{key}.csv",
             mime="text/csv",
             use_container_width=True,
@@ -838,7 +871,7 @@ def format_record_label(index: int, row: pd.Series) -> str:
     event_id = row.get("event_id") or "no-id"
     category = row.get("category") or "Uncategorized"
     source = row.get("source") or ""
-    display_date = row.get("report_date") if source == "FDA_MAUDE" else row.get("event_date")
+    display_date = row.get("report_date") if source in {"FDA_MAUDE", "TGA_DAEN"} else row.get("event_date")
     display_date = display_date or row.get("event_date") or "no-date"
     return f"{index + 1}. {display_date} | {event_id} | {category}"
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlencode
 
@@ -15,6 +15,7 @@ import requests
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
 from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
+from pipeline.source_support import request_with_retry, with_coverage
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class HealthCanadaMdiConnector(BaseSourceConnector):
         **kwargs: Any,
     ) -> SourceFetchResult:
         """Fetch source records from Health Canada's public MDI DataTables API."""
-        config = self.client_config
+        config = replace(self.client_config)
         if kwargs.get("request_timeout"):
             config.timeout = float(kwargs["request_timeout"])
         if kwargs.get("page_size"):
@@ -73,6 +74,8 @@ class HealthCanadaMdiConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(max_pages) if max_pages else None,
+                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
+                session=kwargs.get("session"),
                 debug=bool(kwargs.get("debug", False)),
             )
             return SourceFetchResult(
@@ -102,6 +105,7 @@ def fetch_health_canada_mdi_direct(
     progress_reporter: ProgressReporter | None = None,
     max_pages: int | None = None,
     debug: bool = False,
+    max_records: int | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Fetch and normalize Health Canada MDI records using OR-style keyword searches."""
     config = client_config or HealthCanadaMdiClientConfig()
@@ -110,6 +114,12 @@ def fetch_health_canada_mdi_direct(
     raw_records: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     total_terms = max(1, len(keywords))
+    failures = 0
+    incomplete = False
+    unknown_total = False
+    page_limit = int(max_pages) if max_pages is not None else 100
+    if page_limit < 1 or config.page_size < 1 or (max_records is not None and max_records < 1):
+        raise ValueError("Health Canada page and record limits must be positive")
 
     if progress_reporter:
         progress_reporter.update_source(
@@ -121,18 +131,31 @@ def fetch_health_canada_mdi_direct(
         )
 
     for term_index, keyword in enumerate(keywords or [""], start=1):
+        if max_records and len(raw_records) >= max_records:
+            incomplete = True
+            warnings.append(f"Health Canada retrieval capped at max_records={max_records}")
+            break
         start = 0
         page = 1
         page_size = config.page_size
         total_filtered: int | None = None
+        seen_pages: set[str] = set()
         while True:
             payload = build_health_canada_mdi_payload(keyword, start=start, length=page_size)
-            response = session.post(
-                config.server_side_endpoint,
-                data=payload,
-                headers=_headers(config),
-                timeout=config.timeout,
-            )
+            try:
+                response = request_with_retry(session, "POST", config.server_side_endpoint,
+                                              data=payload, headers=_headers(config), timeout=config.timeout)
+                data = parse_health_canada_mdi_response(response)
+                reported_total = data.get("recordsFiltered")
+                if reported_total is not None:
+                    if reported_total < start + len(data["data"]):
+                        raise ValueError("Health Canada total contradicts its returned rows")
+                    if total_filtered is not None and reported_total != total_filtered:
+                        raise ValueError("Health Canada total changed during pagination")
+            except (requests.RequestException, RuntimeError, ValueError, TypeError) as exc:
+                failures += 1
+                warnings.append(f"Health Canada keyword={keyword} page={page} failed: {type(exc).__name__}: {exc}")
+                break
             if debug:
                 logger.debug(
                     "Health Canada MDI keyword=%s page=%s status=%s snippet=%s",
@@ -141,17 +164,25 @@ def fetch_health_canada_mdi_direct(
                     response.status_code,
                     response.text[:1000],
                 )
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"HTTP {response.status_code} for {config.server_side_endpoint}: {response.text[:1000]}"
-                )
-            data = parse_health_canada_mdi_response(response)
             total_filtered = data.get("recordsFiltered", total_filtered)
+            if total_filtered is None:
+                unknown_total = True
             page_records = data.get("data", [])
+            page_key = hashlib.sha256(json.dumps(page_records, sort_keys=True).encode()).hexdigest()
+            if page_records and page_key in seen_pages:
+                failures += 1
+                warnings.append(f"Health Canada repeated page for keyword={keyword}; coverage incomplete")
+                break
+            seen_pages.add(page_key)
             for raw in page_records:
                 incident = raw.get("incident", raw)
-                incident_id = str(incident.get("incident_id", "")).strip()
-                if incident_id and incident_id not in seen_ids:
+                raw_id = incident.get("incident_id")
+                incident_id = str(raw_id).strip() if raw_id is not None else ""
+                if not incident_id:
+                    incident_id = "content:" + hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
+                    unknown_total = True
+                    warnings.append("Health Canada record has no incident ID; retained with content-based identity")
+                if incident_id not in seen_ids:
                     raw_records.append(raw)
                     seen_ids.add(incident_id)
 
@@ -166,25 +197,45 @@ def fetch_health_canada_mdi_direct(
                 )
 
             if not page_records:
+                if total_filtered is not None and start < int(total_filtered):
+                    failures += 1
+                    warnings.append("Health Canada returned an empty page before its reported total")
+                break
+            if max_records and len(raw_records) >= max_records:
+                if len(raw_records) > max_records or total_filtered is None or start + len(page_records) < int(total_filtered) or term_index < total_terms:
+                    incomplete = True
+                    warnings.append(f"Health Canada retrieval capped at max_records={max_records}")
+                raw_records = raw_records[:max_records]
                 break
             if total_filtered is not None and start + len(page_records) >= int(total_filtered):
                 break
-            if max_pages and page >= max_pages:
-                warnings.append(f"Stopped at max_pages={max_pages} for keyword={keyword}")
+            if page >= page_limit:
+                incomplete = True
+                warnings.append(f"Stopped at max_pages={page_limit} for keyword={keyword}")
                 break
-            start += page_size
+            if total_filtered is None and len(page_records) < page_size:
+                break
+            start += len(page_records)
             page += 1
 
     search_url = build_health_canada_results_url(keywords, config)
-    normalized = [normalize_health_canada_mdi_record(raw, search_url=search_url) for raw in raw_records]
+    normalized = []
+    for raw in raw_records:
+        try:
+            normalized.append(normalize_health_canada_mdi_record(raw, search_url=search_url))
+        except (AttributeError, TypeError, ValueError) as exc:
+            failures += 1
+            warnings.append(f"Health Canada malformed record could not be normalized: {type(exc).__name__}")
     df = ensure_unified_columns(pd.DataFrame(normalized))
     if years and not df.empty:
         df["year"] = pd.to_numeric(df["year"], errors="coerce").astype("Int64")
         df = df[df["year"].isin(years)].copy()
     if (start_date is not None or end_date is not None) and not df.empty:
-        df = df[df["event_date"].apply(lambda value: date_or_year_in_range(value, start_date, end_date))].copy()
+        df = df[df["date_received"].apply(lambda value: date_or_year_in_range(value, start_date, end_date))].copy()
     warnings.append(f"health_canada_mdi_raw_records={len(raw_records)}")
     warnings.append(f"health_canada_mdi_filtered_records={len(df)}")
+    coverage = "failed" if failures and df.empty else "partial" if failures or incomplete else "unverified" if unknown_total else "complete"
+    with_coverage(df, coverage, warnings, retrieved_count=len(raw_records))
     return df, warnings
 
 
@@ -233,14 +284,27 @@ def parse_health_canada_mdi_response(response: requests.Response) -> dict[str, A
         raise RuntimeError(f"Health Canada MDI returned non-JSON response: {response.text[:1000]}") from exc
     if not isinstance(data, dict):
         raise RuntimeError("Health Canada MDI response was not a JSON object")
-    data.setdefault("data", [])
+    if data.get("error") or "data" not in data or not isinstance(data["data"], list):
+        raise RuntimeError("Health Canada response has an error or is missing the data array")
+    if any(not isinstance(item, dict) or not isinstance(item.get("incident", item), dict) for item in data["data"]):
+        raise RuntimeError("Health Canada incident rows have an unexpected shape")
+    if "recordsFiltered" in data:
+        try:
+            data["recordsFiltered"] = int(data["recordsFiltered"])
+        except (TypeError, ValueError):
+            raise RuntimeError("Health Canada result count is invalid") from None
+        if data["recordsFiltered"] < 0:
+            raise RuntimeError("Health Canada result count is negative")
     return data
 
 
 def normalize_health_canada_mdi_record(raw: dict[str, Any], search_url: str | None = None) -> dict[str, Any]:
     """Normalize one Health Canada MDI raw incident to the common schema."""
     incident = raw.get("incident", raw)
-    incident_id = str(incident.get("incident_id", "")).strip()
+    raw_id = incident.get("incident_id")
+    incident_id = str(raw_id).strip() if raw_id is not None else ""
+    if not incident_id:
+        incident_id = "content:" + hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
     trade_names = _list_text(incident.get("trade_name"))
     companies = _list_text(incident.get("company_name"))
     device_desc = _list_text(incident.get("device_desc_e"))
@@ -267,6 +331,7 @@ def normalize_health_canada_mdi_record(raw: dict[str, Any], search_url: str | No
         "company_detail": incident.get("company_detail"),
         "problem_detail": problem_details,
         "results_page_url": search_url,
+        "date_basis": "receipt_date",
     }
     record = {
         "source": SOURCE_NAME,
@@ -275,7 +340,8 @@ def normalize_health_canada_mdi_record(raw: dict[str, Any], search_url: str | No
         "report_number": incident_id,
         "date_of_event": "",
         "date_received": receipt_date,
-        "event_date": receipt_date,
+        "report_date": receipt_date,
+        "event_date": "",
         "year": parse_year_from_date(receipt_date),
         "received_year": parse_year_from_date(receipt_date),
         "country": COUNTRY,

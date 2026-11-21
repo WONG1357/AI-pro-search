@@ -1,0 +1,100 @@
+{
+  "checked_at_utc": "2026-11-21T11:27:41.164867+00:00",
+  "query_scope": "trocar, 2024 where supported; one request per source",
+  "checks": [
+    {
+      "source": "FDA_MAUDE",
+      "url": "https://api.fda.gov/device/event.json",
+      "probe": "single bounded request; not full connector verification",
+      "http_status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 7519,
+      "json_type": "dict",
+      "json_keys": [
+        "meta",
+        "results"
+      ],
+      "reported_total": 125,
+      "returned_items": 1,
+      "elapsed_seconds": 7.18
+    },
+    {
+      "source": "HEALTH_CANADA_MDI",
+      "url": "https://hpr-rps.hres.ca/mdi_dep/serverSideProcessing.php",
+      "probe": "single bounded request; not full connector verification",
+      "http_status": 200,
+      "content_type": "text/html; charset=UTF-8",
+      "bytes": 4455,
+      "json_type": "dict",
+      "json_keys": [
+        "draw",
+        "recordsTotal",
+        "recordsFiltered",
+        "data"
+      ],
+      "reported_total": 351,
+      "returned_items": 1,
+      "elapsed_seconds": 5.88
+    },
+    {
+      "source": "SWISSMEDIC_FSCA",
+      "url": "https://fsca.swissmedic.ch/mep/api/publications/search",
+      "probe": "single bounded request; not full connector verification",
+      "http_status": 200,
+      "content_type": "application/json",
+      "bytes": 5180,
+      "json_type": "dict",
+      "json_keys": [
+        "content",
+        "pageable",
+        "last",
+        "totalElements",
+        "totalPages",
+        "first",
+        "size",
+        "number",
+        "sort",
+        "numberOfElements",
+        "empty"
+      ],
+      "reported_total": 4,
+      "returned_items": 4,
+      "elapsed_seconds": 5.09
+    },
+    {
+      "source": "MHRA_FSCA",
+      "url": "https://www.gov.uk/drug-device-alerts",
+      "probe": "single bounded request; not full connector verification",
+      "http_status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "bytes": 114712,
+      "html_challenge": false,
+      "elapsed_seconds": 5.37
+    },
+    {
+      "source": "BFARM_RECALLS",
+      "url": "https://www.bfarm.de/SiteGlobals/Forms/Suche/EN/Expertensuche_Formular.html",
+      "probe": "single bounded request; not full connector verification",
+      "http_status": 403,
+      "content_type": "text/html; charset=utf-8",
+      "bytes": 146,
+      "html_challenge": false,
+      "elapsed_seconds": 4.77
+    },
+    {
+      "source": "TGA_DAEN",
+      "url": "https://apps.tga.gov.au/PROD/DEVICES/daen-entry.aspx/GetSearchItems",
+      "probe": "single bounded request; not full connector verification",
+      "http_status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "bytes": 51834,
+      "json_type": "dict",
+      "json_keys": [
+        "d"
+      ],
+      "reported_total": null,
+      "returned_items": 153,
+      "elapsed_seconds": 9.39
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+{
+  "checked_at": "2026-11-21T11:37:30.951869+00:00",
+  "scope": "Full deterministic pipeline for all six connectors with deliberately small caps; includes isolated worker execution, filtering, CSV/Excel/evidence generation and manifest verification. No OpenAI API call. Endpoint reachability and exhaustive/semantic correctness are separate claims.",
+  "request": {
+    "keywords": [
+      "trocar"
+    ],
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "sources": [
+      "FDA_MAUDE",
+      "TGA_DAEN",
+      "HEALTH_CANADA_MDI",
+      "SWISSMEDIC_FSCA",
+      "MHRA_FSCA",
+      "BFARM_RECALLS"
+    ],
+    "question": "Medical-device incident surveillance",
+    "components": [],
+    "accident_terms": [],
+    "classifier_profile": "Trocar",
+    "max_pages": 1,
+    "max_records": 2,
+    "request_timeout": 10,
+    "source_timeout": 35
+  },
+  "source_status": [
+    {
+      "source_name": "FDA_MAUDE",
+      "success": true,
+      "completeness": "partial",
+      "retrieved_count": 2,
+      "returned_count": 2.0,
+      "total_available": null,
+      "error_message": "",
+      "matched_count": 2.0,
+      "elapsed_seconds": 4.368,
+      "exported_count": 2,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "success": false,
+      "completeness": "failed",
+      "retrieved_count": 0,
+      "returned_count": null,
+      "total_available": null,
+      "error_message": "Source exceeded the 35s elapsed-time budget; coverage is unknown, not zero.",
+      "matched_count": null,
+      "elapsed_seconds": 35.043,
+      "exported_count": 0,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    },
+    {
+      "source_name": "HEALTH_CANADA_MDI",
+      "success": true,
+      "completeness": "partial",
+      "retrieved_count": 2,
+      "returned_count": 0.0,
+      "total_available": null,
+      "error_message": "",
+      "matched_count": null,
+      "elapsed_seconds": 3.89,
+      "exported_count": 0,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    },
+    {
+      "source_name": "SWISSMEDIC_FSCA",
+      "success": true,
+      "completeness": "partial",
+      "retrieved_count": 2,
+      "returned_count": 2.0,
+      "total_available": null,
+      "error_message": "",
+      "matched_count": 2.0,
+      "elapsed_seconds": 4.048,
+      "exported_count": 2,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    },
+    {
+      "source_name": "MHRA_FSCA",
+      "success": true,
+      "completeness": "unverified",
+      "retrieved_count": 1,
+      "returned_count": 1.0,
+      "total_available": null,
+      "error_message": "",
+      "matched_count": 1.0,
+      "elapsed_seconds": 14.817,
+      "exported_count": 1,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    },
+    {
+      "source_name": "BFARM_RECALLS",
+      "success": false,
+      "completeness": "failed",
+      "retrieved_count": 0,
+      "returned_count": 0.0,
+      "total_available": null,
+      "error_message": "HTTP 403 from source",
+      "matched_count": null,
+      "elapsed_seconds": 4.567,
+      "exported_count": 0,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    }
+  ],
+  "source_errors": [
+    {
+      "source_name": "TGA_DAEN",
+      "error_message": "Source exceeded the 35s elapsed-time budget; coverage is unknown, not zero."
+    },
+    {
+      "source_name": "BFARM_RECALLS",
+      "error_message": "HTTP 403 from source"
+    }
+  ],
+  "source_warnings": [
+    {
+      "source_name": "FDA_MAUDE",
+      "warning_message": "FDA source retrieval capped at max_records=2 query hits before deduplication"
+    },
+    {
+      "source_name": "HEALTH_CANADA_MDI",
+      "warning_message": "Health Canada retrieval capped at max_records=2"
+    },
+    {
+      "source_name": "HEALTH_CANADA_MDI",
+      "warning_message": "health_canada_mdi_raw_records=2"
+    },
+    {
+      "source_name": "HEALTH_CANADA_MDI",
+      "warning_message": "health_canada_mdi_filtered_records=0"
+    },
+    {
+      "source_name": "SWISSMEDIC_FSCA",
+      "warning_message": "swissmedic_fsca_records=2"
+    },
+    {
+      "source_name": "SWISSMEDIC_FSCA",
+      "warning_message": "Swissmedic retrieval capped at max_records=2"
+    },
+    {
+      "source_name": "MHRA_FSCA",
+      "warning_message": "mhra_fsca_records=1"
+    },
+    {
+      "source_name": "MHRA_FSCA",
+      "warning_message": "MHRA retrieval covers indexed notice headings and excerpts; full attachment content and exhaustive coverage are unverified"
+    },
+    {
+      "source_name": "BFARM_RECALLS",
+      "warning_message": "HTTP 403 from source"
+    },
+    {
+      "source_name": "BFARM_RECALLS",
+      "warning_message": "bfarm_records=0"
+    },
+    {
+      "source_name": "BFARM_RECALLS",
+      "warning_message": "BfArM HTML listing coverage is unverified; retrieved notices are not an exhaustive incident database"
+    }
+  ],
+  "verification": {
+    "run_id": "20261121T113730Z-68040b73f00e",
+    "status": "incomplete",
+    "verified_files": 16,
+    "evidence_records": 5
+  }
+}

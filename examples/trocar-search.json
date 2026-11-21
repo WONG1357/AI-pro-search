@@ -1,0 +1,12 @@
+{
+  "question": "Find trocar adverse-event reports and field safety notices for 2024.",
+  "keywords": ["trocar", "Versaport", "VersaOne"],
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31",
+  "sources": ["FDA_MAUDE", "TGA_DAEN", "HEALTH_CANADA_MDI", "SWISSMEDIC_FSCA", "MHRA_FSCA", "BFARM_RECALLS"],
+  "classifier_profile": "Trocar",
+  "max_pages": 10,
+  "max_records": 1000,
+  "request_timeout": 20,
+  "source_timeout": 120
+}

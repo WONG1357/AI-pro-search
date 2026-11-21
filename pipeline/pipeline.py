@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -13,7 +16,7 @@ from pipeline.config import DEFAULT_KEYWORDS, DEFAULT_TARGET_YEARS, EXPORTS_DIR
 from pipeline.export import export_pipeline_results
 from pipeline.progress import ProgressReporter
 from pipeline.sources import DEFAULT_SELECTED_SOURCES, SOURCE_REGISTRY, ensure_unified_columns
-from pipeline.utils import contains_any_keyword, date_or_year_in_range, format_fda_date, parse_year_from_date
+from pipeline.utils import contains_any_keyword, date_or_year_in_range, format_fda_date, parse_year_from_date, parse_date_value
 
 
 def run_pipeline(
@@ -31,53 +34,89 @@ def run_pipeline(
     end_date: object | None = None,
     classifier_profile: str = "Trocar",
     **kwargs: Any,
-) -> dict[str, pd.DataFrame]:
+) -> dict[str, Any]:
     """Run ingestion, cleaning, filtering, deduplication, classification, and export.
 
-    The legacy ``mhra_csv_path`` argument is accepted for backward compatibility
-    but ignored. The pipeline now uses FDA MAUDE only.
+    Source coverage is retained separately from record counts. A failed source
+    is never interpreted as a verified zero-result search.
     """
-    keywords = list(keywords)
-    years = list(years)
-    selected_sources = list(selected_sources or DEFAULT_SELECTED_SOURCES)
-    source_options = source_options or {}
+    keywords = list(dict.fromkeys(str(term).strip() for term in keywords if str(term).strip()))
+    if not keywords:
+        raise ValueError("At least one non-empty device keyword is required")
+    years = sorted(set(int(year) for year in years))
+    if any(year < 1900 or year > 9999 for year in years):
+        raise ValueError("Years must be between 1900 and 9999")
+    for label, value in [("start_date", start_date), ("end_date", end_date)]:
+        if value is not None and parse_date_value(value) is None:
+            raise ValueError(f"{label} must be a complete, valid date")
+    if start_date is not None and end_date is not None and parse_date_value(start_date) > parse_date_value(end_date):
+        raise ValueError("start_date must be on or before end_date")
+    selected_sources = list(dict.fromkeys(DEFAULT_SELECTED_SOURCES if selected_sources is None else selected_sources))
+    if not selected_sources:
+        raise ValueError("At least one source must be selected")
+    source_options = deepcopy(source_options or {})
     global_options = source_options.pop("_global", {})
     progress_reporter = kwargs.pop("progress_reporter", None) or ProgressReporter(selected_sources)
     request_timeout = global_options.get("request_timeout")
     max_pages = global_options.get("max_pages")
+    max_records = global_options.get("max_records")
     debug = bool(global_options.get("debug", False))
 
     if mhra_csv_path is not None:
-        print("[WARN] mhra_csv_path is deprecated and ignored; FDA MAUDE only is supported.")
+        print("[WARN] mhra_csv_path is deprecated; the selected online source connectors are used.")
     if kwargs:
         print(f"[WARN] Ignoring unsupported run_pipeline kwargs: {sorted(kwargs.keys())}")
 
     source_frames: list[pd.DataFrame] = []
     source_errors: list[dict[str, str]] = []
     source_warnings: list[dict[str, str]] = []
+    source_status: list[dict[str, Any]] = []
+    query = {"keywords": keywords, "years": years, "selected_sources": selected_sources,
+             "start_date": str(start_date) if start_date is not None else None,
+             "end_date": str(end_date) if end_date is not None else None,
+             "classifier_profile": classifier_profile, "components": components or [],
+             "accident_terms": accident_terms or []}
 
     for source_id in selected_sources:
         connector_cls = SOURCE_REGISTRY.get(source_id)
         if connector_cls is None:
             source_errors.append({"source_name": source_id, "error_message": "Unknown source id"})
-            progress_reporter.skip_source(source_id, "Unknown source id")
+            progress_reporter.fail_source(source_id, "Unknown source id")
+            source_status.append({"source_name": source_id, "success": False, "completeness": "failed", "retrieved_count": 0, "total_available": None, "error_message": "Unknown source id"})
             continue
 
-        connector = connector_cls()
         progress_reporter.start_source(source_id, message="Source queued")
-        result = connector.fetch(
-            keywords=keywords,
-            years=years,
-            components=components,
-            accident_terms=accident_terms,
-            progress_reporter=progress_reporter,
-            start_date=start_date,
-            end_date=end_date,
-            request_timeout=request_timeout,
-            max_pages=max_pages,
-            debug=debug,
-            **source_options.get(source_id, {}),
-        )
+        options = dict(request_timeout=request_timeout, max_pages=max_pages, max_records=max_records, debug=debug)
+        options.update(source_options.get(source_id, {}))
+        # Reserved query fields cannot be replaced by source tuning options.
+        options.update(keywords=keywords, years=years, components=None,
+                       accident_terms=None, progress_reporter=progress_reporter,
+                       start_date=start_date, end_date=end_date)
+        try:
+            result = connector_cls().fetch(**options)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: source execution failed"
+            progress_reporter.fail_source(source_id, message)
+            source_errors.append({"source_name": source_id, "error_message": message})
+            source_status.append({"source_name": source_id, "success": False, "completeness": "failed", "retrieved_count": 0, "total_available": None, "error_message": message})
+            continue
+
+        records = ensure_unified_columns(result.records)
+        completeness = getattr(result, "completeness", "unverified")
+        if completeness not in {"complete", "partial", "failed", "unverified"}:
+            completeness = "unverified"
+        if not result.success:
+            completeness = "partial" if len(records) else "failed"
+        source_status.append({
+            "source_name": source_id, "success": bool(result.success),
+            "completeness": completeness,
+            "retrieved_count": getattr(result, "retrieved_count", None) if getattr(result, "retrieved_count", None) is not None else len(records),
+            "returned_count": len(records),
+            "total_available": getattr(result, "total_available", None),
+            "effective_start": result.records.attrs.get("effective_start"),
+            "effective_end": result.records.attrs.get("effective_end"),
+            "error_message": result.error_message or "",
+        })
 
         if result.warnings:
             source_warnings.extend(
@@ -85,17 +124,18 @@ def run_pipeline(
                 for warning in result.warnings
             )
         if not result.success:
-            progress_reporter.fail_source(result.source_name, result.error_message or "Unknown source error")
             source_errors.append(
                 {
                     "source_name": result.source_name,
                     "error_message": result.error_message or "Unknown source error",
                 }
             )
-            continue
-
-        progress_reporter.complete_source(result.source_name, records_fetched=len(result.records))
-        source_frames.append(result.records)
+        if completeness == "failed":
+            progress_reporter.fail_source(source_id, result.error_message or "Source failed")
+        else:
+            progress_reporter.complete_source(source_id, records_fetched=len(records), completeness=completeness)
+        if not records.empty:
+            source_frames.append(records)
 
     df_all = pd.concat(source_frames, ignore_index=True) if source_frames else ensure_unified_columns(pd.DataFrame())
 
@@ -106,17 +146,21 @@ def run_pipeline(
         "summary_source_category": pd.DataFrame(),
         "source_errors": pd.DataFrame(source_errors),
         "source_warnings": pd.DataFrame(source_warnings),
+        "source_status": pd.DataFrame(source_status),
+        "query": query,
         "progress": progress_reporter.get_snapshot(),
     }
     if df_all.empty:
         print("[WARN] No records retrieved.")
         if export_results:
-            export_pipeline_results(empty_results, output_dir, file_prefix=export_file_prefix)
+            empty_results["export_files"] = export_pipeline_results(empty_results, output_dir, file_prefix=export_file_prefix)
         return empty_results
 
     df_all = clean_records(df_all)
     df_filtered = filter_records(df_all, keywords, years, start_date=start_date, end_date=end_date)
     df_filtered = deduplicate_records(df_filtered)
+    for status in source_status:
+        status["matched_count"] = int(df_filtered["source"].eq(status["source_name"]).sum())
 
     print(f"[INFO] Classifying {len(df_filtered):,} filtered records...")
     classification = classify_records(
@@ -143,12 +187,15 @@ def run_pipeline(
         "summary_source_category": summary_source_category,
         "source_errors": pd.DataFrame(source_errors),
         "source_warnings": pd.DataFrame(source_warnings),
+        "source_status": pd.DataFrame(source_status),
+        "query": query,
         "progress": progress_reporter.get_snapshot(),
     }
 
     if export_results:
         files = export_pipeline_results(results, output_dir, file_prefix=export_file_prefix)
-        print("[OK] Pipeline completed.")
+        results["export_files"] = files
+        print(f"[INFO] Pipeline finished with coverage status: {results['progress'].overall_status}.")
         print(f"Raw records:      {len(df_all):,}")
         print(f"Filtered records: {len(df_filtered):,}")
         print(f"Saved to folder:  {Path(output_dir).resolve()}")
@@ -272,52 +319,37 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
     missing_event_date = cleaned["event_date"].fillna("").astype(str).str.strip() == ""
     cleaned.loc[missing_event_date, "event_date"] = cleaned.loc[missing_event_date, "date_of_event"]
 
-    missing_event_date = cleaned["event_date"].fillna("").astype(str).str.strip() == ""
-    cleaned.loc[missing_event_date, "event_date"] = cleaned.loc[missing_event_date, "date_received"]
-
     cleaned["year"] = pd.to_numeric(cleaned["event_date"].apply(parse_year_from_date), errors="coerce").astype("Int64")
     cleaned["received_year"] = pd.to_numeric(
         cleaned["date_received"].apply(parse_year_from_date),
         errors="coerce",
     ).astype("Int64")
     source = cleaned.get("source", pd.Series("", index=cleaned.index)).fillna("").astype(str)
-    cleaned["search_date"] = cleaned["event_date"].where(source != "FDA_MAUDE", cleaned["report_date"])
+    report_date_sources = source.isin(["FDA_MAUDE", "TGA_DAEN"])
+    cleaned["search_date"] = cleaned["event_date"].where(~report_date_sources, cleaned["report_date"])
+    cleaned["search_date_basis"] = "event_date"
+    cleaned.loc[report_date_sources, "search_date_basis"] = "report_date"
     missing_search_date = cleaned["search_date"].fillna("").astype(str).str.strip() == ""
-    cleaned.loc[missing_search_date, "search_date"] = cleaned.loc[missing_search_date, "event_date"]
+    cleaned.loc[missing_search_date, "search_date"] = cleaned.loc[missing_search_date, "report_date"]
+    cleaned.loc[missing_search_date, "search_date_basis"] = "report_date_fallback"
+    cleaned.loc[cleaned["search_date"].eq(""), "search_date_basis"] = "unknown"
     cleaned["search_year"] = pd.to_numeric(
         cleaned["search_date"].apply(parse_year_from_date),
         errors="coerce",
     ).astype("Int64")
 
-    cleaned["combined_text"] = (
-        cleaned["product_name"].str.lower()
-        + " "
-        + cleaned["brand_names"].str.lower()
-        + " "
-        + cleaned["narrative_text"].str.lower()
-    ).str.replace(r"\s+", " ", regex=True).str.strip()
-
-    cleaned["classification_text"] = (
-        cleaned["product_name"].str.lower()
-        + " "
-        + cleaned["brand_names"].str.lower()
-        + " "
-        + cleaned["generic_name"].str.lower()
-        + " "
-        + cleaned["device_model"].str.lower()
-        + " "
-        + cleaned["event_type"].str.lower()
-        + " "
-        + cleaned["device_problem_text"].str.lower()
-        + " "
-        + cleaned["patient_problem_text"].str.lower()
-        + " "
-        + cleaned["patient_outcome"].str.lower()
-        + " "
-        + cleaned["source_category_name"].str.lower()
-        + " "
-        + cleaned["narrative_text"].str.lower()
-    ).str.replace(r"\s+", " ", regex=True).str.strip()
+    search_fields = ["product_name", "brand_names", "generic_name", "device_model",
+                     "manufacturer", "product_code", "device_problem_text",
+                     "patient_problem_text", "narrative_text"]
+    cleaned["combined_text"] = cleaned[search_fields].agg(" ".join, axis=1).str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
+    classification_fields = ["product_name", "brand_names", "generic_name", "device_model",
+                             "event_type", "device_problem_text", "patient_problem_text",
+                             "patient_outcome", "source_category_name", "narrative_text"]
+    # Preserve field boundaries so 'No patient injury' cannot negate a separate
+    # device-problem field describing a fracture.
+    cleaned["classification_text"] = cleaned[classification_fields].apply(
+        lambda row: ". ".join(value for value in row if value.strip()), axis=1
+    ).str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
 
     return cleaned
 
@@ -353,7 +385,10 @@ def filter_records(
         filtered = filtered[date_mask | filtered_device_registry].copy()
     filtered["keyword_hit"] = filtered["combined_text"].apply(lambda text: contains_any_keyword(text, keywords))
     if "source_query_match" in filtered.columns:
-        source_match = filtered["source_query_match"].fillna(False).astype(bool)
+        source_match = filtered["source_query_match"].apply(
+            lambda value: value is True or isinstance(value, (int, float)) and value == 1
+            or isinstance(value, str) and value.strip().lower() in {"true", "1"}
+        )
         filtered.loc[source_match, "keyword_hit"] = True
     return filtered[filtered["keyword_hit"]].copy()
 
@@ -365,21 +400,33 @@ def deduplicate_records(df: pd.DataFrame) -> pd.DataFrame:
 
     deduped = df.copy()
     deduped["event_id"] = deduped["event_id"].fillna("").astype(str).str.strip()
+    deduped["record_uid"] = deduped.apply(_record_uid, axis=1)
+    deduped["duplicate_count"] = deduped.groupby("record_uid")["record_uid"].transform("size") - 1
+    return deduped.drop_duplicates(subset=["record_uid"], keep="first").reset_index(drop=True)
 
-    with_id = deduped[deduped["event_id"] != ""].drop_duplicates(subset=["source", "event_id"], keep="first")
-    no_id = deduped[deduped["event_id"] == ""].copy()
 
-    if not no_id.empty:
-        no_id["tmp_hash"] = (
-            no_id["source"].astype(str)
-            + "|"
-            + no_id["event_date"].astype(str)
-            + "|"
-            + no_id["combined_text"].str.slice(0, 500)
-        ).apply(hash)
-        no_id = no_id.drop_duplicates(subset=["tmp_hash"], keep="first").drop(columns=["tmp_hash"])
+def _record_uid(row: pd.Series) -> str:
+    source = str(row.get("source") or "")
+    event_id = str(row.get("event_id") or "").strip()
+    if event_id:
+        identity = [source, "event_id", event_id]
+    else:
+        fields = ["report_number", "event_date", "report_date", "product_name", "manufacturer",
+                  "brand_names", "generic_name", "device_model", "combined_text"]
+        identity = [source, "content"] + [str(row.get(field) or "") for field in fields]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
-    return pd.concat([with_id, no_id], ignore_index=True)
+
+def _summary_records(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+    # IDs are unique only inside a source; missing IDs still represent records.
+    source = working.get("source", pd.Series("", index=working.index)).fillna("").astype(str)
+    event_id = working.get("event_id", pd.Series("", index=working.index)).fillna("").astype(str).str.strip()
+    working["_count_identity"] = [
+        json.dumps([s, identifier]) if identifier else f"missing:{position}"
+        for position, (s, identifier) in enumerate(zip(source, event_id))
+    ]
+    return working
 
 
 def summarize_by_year_category(df: pd.DataFrame) -> pd.DataFrame:
@@ -388,8 +435,8 @@ def summarize_by_year_category(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["year", "category", "incident_count"])
     year_column = "search_year" if "search_year" in df.columns else "year"
     return (
-        df.groupby([year_column, "category"], as_index=False)
-        .agg(incident_count=("event_id", _incident_count))
+        _summary_records(df).groupby([year_column, "category"], as_index=False, dropna=False)
+        .agg(incident_count=("_count_identity", "nunique"))
         .rename(columns={year_column: "year"})
         .sort_values(["year", "incident_count"], ascending=[True, False])
     )
@@ -400,8 +447,8 @@ def summarize_by_source_category(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["source", "category", "incident_count"])
     return (
-        df.groupby(["source", "category"], as_index=False)
-        .agg(incident_count=("event_id", _incident_count))
+        _summary_records(df).groupby(["source", "category"], as_index=False, dropna=False)
+        .agg(incident_count=("_count_identity", "nunique"))
         .sort_values(["source", "incident_count"], ascending=[True, False])
     )
 
@@ -410,7 +457,7 @@ def _incident_count(event_ids: pd.Series) -> int:
     """Count unique non-empty event IDs, or rows when IDs are unavailable."""
     normalized = event_ids.fillna("").astype(str)
     non_empty = normalized[normalized != ""]
-    return int(non_empty.nunique()) if not non_empty.empty else int(len(event_ids))
+    return int(non_empty.nunique()) + int((normalized == "").sum())
 
 
 def parse_args() -> argparse.Namespace:
