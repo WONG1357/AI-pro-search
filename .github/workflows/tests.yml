@@ -55,3 +55,61 @@ jobs:
               if not known_positive:
                   raise SystemExit('The current portal response did not verify the historical reference.')
           PY
+      - name: Probe live TGA report pagination
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[tga-pagination-live]')
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          python - <<'PY'
+          import json
+          import re
+
+          from pipeline.source_support import SourceRequestError
+          from pipeline.sources.tga_daen import TgaDaenClientConfig, fetch_tga_daen_direct
+
+          start, end = '2020-01-01', '2022-12-31'
+          budget = {'page_size': 5, 'max_pages': 4, 'max_reports': 25,
+                    'request_timeout_seconds': 15, 'step_timeout_minutes': 3}
+          print(json.dumps({'source': 'TGA_DAEN', 'artg_search_term': '339475',
+                            'start_date': start, 'end_date': end, 'budget': budget}), flush=True)
+
+          class ReportPages:
+              def __init__(self):
+                  self.parsed_pages = []
+
+              def update_source(self, source, *, message='', **progress):
+                  match = re.fullmatch(r'TGA_DAEN parsed \d+ summary report rows on page (\d+)', message)
+                  if source == 'TGA_DAEN' and match:
+                      self.parsed_pages.append(int(match[1]))
+
+          pages = ReportPages()
+          try:
+              report = fetch_tga_daen_direct(
+                  ['339475'], start_date=start, end_date=end,
+                  client_config=TgaDaenClientConfig(page_size=budget['page_size'],
+                                                  timeout=budget['request_timeout_seconds']),
+                  max_pages=budget['max_pages'], max_reports=budget['max_reports'],
+                  progress_reporter=pages,
+              )
+          except Exception as exc:
+              reason = str(exc) if isinstance(exc, SourceRequestError) else type(exc).__name__
+              print(json.dumps({'coverage': 'failed', 'html_report_pages_parsed': pages.parsed_pages,
+                                'error': reason}), flush=True)
+              raise SystemExit(1)
+
+          records, metadata = report['records'], report['metadata']
+          warnings = report['warnings']
+          known_positive = any(row.report_number == '67102' and row.report_date == '2020-12-14'
+                               for row in records.itertuples(index=False))
+          print(json.dumps({
+              'coverage': records.attrs.get('completeness'),
+              'expected_report_count': metadata.get('expected_report_count'),
+              'retained_report_count': len(records), 'known_positive': known_positive,
+              'content_type': next((w.partition('=')[2] for w in warnings if w.startswith('content_type=')), None),
+              'html_report_pages_parsed': pages.parsed_pages,
+              'live_pagination_verified': 2 in pages.parsed_pages,
+              'warnings': warnings,
+          }), flush=True)
+          if 2 not in pages.parsed_pages:
+              raise SystemExit('The portal response did not verify a second HTML report page.')
+          PY

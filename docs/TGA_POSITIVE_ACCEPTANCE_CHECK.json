@@ -32,9 +32,9 @@
     "tga_tests_passed": 42
   },
   "current_portal_verification": {
-    "status": "pending",
+    "status": "positive_report_verified",
     "portal_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-entry.aspx",
-    "observed_blockers": [
+    "initial_local_access_limits": [
       "The workspace could not resolve the regulator host for a direct HTTPS request.",
       "The ChatGPT in-app browser was unavailable in this session."
     ],
@@ -48,6 +48,25 @@
       "request_timeout": 15,
       "source_timeout": 90
     },
-    "comparison": "Reconcile today's autocomplete choices, echoed dates and report count against actual List of reports pages and print output. Look for report 67102 and resolve any difference against current official records. The 15-report historical total is for a different device selection and date range and cannot be used as the expected total of this probe."
+    "github_actions_result": {
+      "commit": "17c8dcb8434abf5bea9be7e15d2881157551a0c5",
+      "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46138599242/job/140959335422",
+      "checked_at_utc": "2026-11-28T11:11:17Z",
+      "selected_device_count": 6,
+      "effective_start": "2020-12-01",
+      "effective_end": "2020-12-31",
+      "response_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-report.aspx",
+      "content_type": "text/html; charset=utf-8",
+      "portal_report_count": 1,
+      "retrieved_count": 1,
+      "exported_count": 1,
+      "coverage": "complete",
+      "report_number_verified": "67102",
+      "report_date_verified": "2020-12-14",
+      "verified_date_basis": "report_date",
+      "structured_export_integrity_verified": true,
+      "error_count": 0
+    },
+    "scope": "The portal result reconciles the one-report total for this exact December 2020 query. The 15-report historical total uses a broader date range. The positive HTML run did not exercise a second portal page or a live PDF-only response."
   }
 }
