@@ -110,6 +110,23 @@ def test_portal_is_not_promoted_to_record_citation():
     assert len(row["raw_sha256"]) == 64
 
 
+@pytest.mark.parametrize("source, listing, attachment", [
+    ("MHRA_FSCA", "https://www.gov.uk/drug-device-alerts/field-safety-notices-fsns-from-1-to-5-january-2024",
+     "https://assets.publishing.service.gov.uk/media/abc/device-notice.pdf"),
+    ("BFARM_RECALLS", "https://www.bfarm.de/SiteGlobals/Forms/Suche/EN/Expertensuche_Formular.html?query=trocar",
+     "https://www.bfarm.de/SharedDocs/Kundeninfos/EN/01/2024/device-notice.pdf"),
+])
+def test_listing_retained_as_locator_while_specific_document_is_citable(source, listing, attachment):
+    frame = pd.DataFrame([record(source, event_link=listing, raw_link=listing)])
+    evidence = build_evidence(frame, "2026-11-21T00:00:00+00:00")[0]
+    assert evidence["direct_record_url"] is None
+    assert evidence["source_locator_url"] == listing
+    frame["event_link"] = attachment
+    evidence = build_evidence(frame, "2026-11-21T00:00:00+00:00")[0]
+    assert evidence["direct_record_url"] == attachment
+    assert evidence["source_locator_url"] == listing
+
+
 def make_report(tmp_path):
     query = request(sources=["FDA_MAUDE"])
     result = collect(query, fetcher=lambda q, source: source_result(source))
@@ -150,9 +167,36 @@ def test_assessment_rejects_fake_citations_and_fabricated_quotes(tmp_path):
 def test_assessment_requires_real_excerpts_then_revalidates_artifacts(tmp_path):
     folder = make_report(tmp_path)
     evidence = json.loads((folder / "evidence.json").read_text())[0]
-    path = add_assessment(folder, {"claims": [{"statement": "The report describes a component fracture.", "support": [{"evidence_id": evidence["evidence_id"], "quote": "The trocar component fractured during use."}]}], "limitations": ["Reporting is not proof of causation."], "next_steps": []})
-    assert path.exists()
-    assert verify_report(folder)["verified_files"] > 5
+    quote = "The trocar component fractured during use. No patient injury was reported."
+    path = add_assessment(folder, {"claims": [{"statement": "The report describes a component fracture.", "support": [{"evidence_id": evidence["evidence_id"], "quote": quote}]}], "limitations": ["Reporting is not proof of causation."], "next_steps": []})
+    markdown = path.read_text()
+    assert "Human review required" in markdown
+    assert "Complete within the selected queries" in markdown
+    assert "2024-01-01 through 2024-12-31" in markdown
+    assert "| FDA MAUDE | complete | 1 |" in markdown
+    assert f"Excerpt from `{evidence['evidence_id']}`\n  ~~~text\n  {quote}\n  ~~~" in markdown
+    assert json.loads((folder / "manifest.json").read_text())["assessment_format_version"] == 2
+    assert verify_report(folder, require_assessment=True)["verified_files"] > 5
+
+
+def test_legacy_assessment_without_format_marker_still_verifies(tmp_path):
+    from cloud_agent.evidence import _manifest
+
+    folder = make_report(tmp_path)
+    evidence = json.loads((folder / "evidence.json").read_text())[0]
+    overview = json.loads((folder / "overview.json").read_text())
+    statement = "The report describes a component fracture."
+    assessment = {"claims": [{"statement": statement, "support": [
+        {"evidence_id": evidence["evidence_id"], "quote": "The trocar component fractured during use."},
+    ]}]}
+    (folder / "assessment.json").write_text(json.dumps(assessment))
+    (folder / "assessment.md").write_text(
+        "# Agent assessment\n\nReferences and excerpts below were checked against this run. "
+        "This check establishes provenance, not that the interpretation is correct.\n\n"
+        f"- {statement} (`{evidence['evidence_id']}`)\n",
+    )
+    _manifest(folder, overview["run_id"], status=overview["status"])
+    assert verify_report(folder, require_assessment=True)["evidence_records"] == 1
 
 
 def test_all_failed_report_cannot_say_no_incidents(tmp_path):
@@ -308,7 +352,12 @@ def test_download_cli_exits_unsuccessfully_when_all_sources_failed(tmp_path, mon
         raise RuntimeError("source unavailable")
     query = request()
     folder = write_report(query, collect(query, fetcher=failed), tmp_path)
-    add_assessment(folder, {"claims": [], "limitations": ["Both sources were unavailable."], "next_steps": []})
+    path = add_assessment(folder, {"claims": [], "limitations": ["Both sources were unavailable."], "next_steps": []})
+    markdown = path.read_text()
+    assert "The search could not determine whether matching reports exist" in markdown
+    assert "| FDA MAUDE | failed | 0 |" in markdown
+    assert "| TGA DAEN | failed | 0 |" in markdown
+    assert "No evidence-backed claims were provided in this assessment" in markdown
     monkeypatch.setattr(hosted, "collect_artifacts", lambda *a, **kw: [p for p in folder.rglob("*") if p.is_file()])
     assert main(["download", "--state", str(tmp_path / "state.json"), "--output", str(tmp_path)]) == 2
 
@@ -340,6 +389,7 @@ def test_official_document_fallback_stays_separate_and_supports_citations(tmp_pa
     import hashlib
     from cloud_agent import supplement
     folder = make_report(tmp_path)
+    assessment_path = add_assessment(folder, {"limitations": ["Awaiting supplemental review."]})
     raw = b"Official notice: component fracture."
     def fetch(source, url):
         return {"evidence_id": "WEB-FDA_MAUDE-abc123", "source": source, "source_name": "FDA", "coverage": "unverified", "direct_record_url": url, "raw_sha256": hashlib.sha256(raw).hexdigest(), "narrative": raw.decode(), "patient_outcome": "", "device_problem": "", "raw_record": {"text": raw.decode()}, "extraction_truncated": False}, raw, ".html"
@@ -349,6 +399,8 @@ def test_official_document_fallback_stays_separate_and_supports_citations(tmp_pa
     overview = json.loads((folder / "overview.json").read_text())
     assert overview["included_records"] == 1  # Original database count unchanged.
     assert overview["supplemental_coverage"] == "unverified"
+    assert "**Supplemental documents** — 1 (coverage unverified)" in assessment_path.read_text()
+    assert verify_report(folder, require_assessment=True)["evidence_records"] == 1
     add_assessment(folder, {"claims": [{"statement": "A separate official notice describes component fracture.", "support": [{"evidence_id": "WEB-FDA_MAUDE-abc123", "quote": "Official notice: component fracture."}]}], "limitations": ["The supplemental search is not exhaustive."], "next_steps": []})
     assert verify_report(folder)["evidence_records"] == 1
 

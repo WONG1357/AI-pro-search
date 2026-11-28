@@ -154,6 +154,7 @@ The supplementary fetcher currently supports text extraction from HTML and text-
 - [Official-document fallback check](docs/SUPPLEMENT_CHECK.json)
 - [MHRA notice-date and BfArM coverage checks](docs/MHRA_BFARM_ACCEPTANCE_CHECK.json)
 - [Official-record search quality benchmark](docs/SEARCH_QUALITY_BENCHMARK.md)
+- [QA/RA reviewer prompt and user acceptance checks](docs/QA_RA_ACCEPTANCE.md)
 - [Hosted acceptance continuation evidence](docs/HOSTED_ACCEPTANCE_CONTINUATION.json)
 - [Final regression result](docs/REGRESSION_CHECK.json)
 - [Verified hosted API contract](docs/HOSTED_API_CONTRACT.md)

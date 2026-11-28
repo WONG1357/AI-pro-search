@@ -233,7 +233,9 @@ def test_swissmedic_normalization_maps_recall_fields() -> None:
     assert normalized["source"] == "SWISSMEDIC_FSCA"
     assert normalized["source_type"] == "regulatory_recall"
     assert normalized["event_id"] == "Vk_20240304_29"
-    assert normalized["event_date"] == "2024-03-05"
+    assert normalized["event_date"] == normalized["date_received"] == ""
+    assert normalized["search_date"] == "2024-03-05"
+    assert normalized["search_date_basis"] == "publication_date"
     assert normalized["manufacturer"] == "Covidien llc"
     assert normalized["product_name"] == "Auto Suture Structural Balloon Trocar"
     assert normalized["device_model"] == "OMS-T10SB"
@@ -329,9 +331,11 @@ def test_mhra_date_range_filter_excludes_out_of_range_records() -> None:
     )
 
     assert record["year"] == 2024
-    assert record["event_date"] == "2024-03-05"
-    assert date_or_year_in_range(record["event_date"], "2024-03-01", "2024-03-31") is True
-    assert date_or_year_in_range(record["event_date"], "2024-04-01", "2024-04-30") is False
+    assert record["event_date"] == record["date_received"] == ""
+    assert record["search_date"] == "2024-03-05"
+    assert record["search_date_basis"] == "source_issued_date"
+    assert date_or_year_in_range(record["search_date"], "2024-03-01", "2024-03-31") is True
+    assert date_or_year_in_range(record["search_date"], "2024-04-01", "2024-04-30") is False
 
 
 def test_mhra_partial_date_is_preserved() -> None:
@@ -346,7 +350,9 @@ def test_mhra_partial_date_is_preserved() -> None:
     """
     raw = parse_mhra_notice_page(html, "https://www.gov.uk/drug-device-alerts/test", keyword="example")[0]
     normalized = normalize_mhra_fsca_record(raw)
-    assert normalized["event_date"] == "March 2024"
+    assert normalized["event_date"] == ""
+    assert normalized["search_date"] == "March 2024"
+    assert normalized["search_date_basis"] == "manufacturer_notice_date"
 
 
 def test_bfarm_parser_and_normalization() -> None:
@@ -374,7 +380,9 @@ def test_bfarm_parser_and_normalization() -> None:
     normalized = normalize_bfarm_record(parsed[0])
     assert normalized["source"] == "BFARM_RECALLS"
     assert normalized["event_id"] == "06720/23"
-    assert normalized["event_date"] == "2023-05-02"
+    assert normalized["event_date"] == normalized["date_received"] == ""
+    assert normalized["search_date"] == "2023-05-02"
+    assert normalized["search_date_basis"] == "notice_publication_date"
     assert normalized["event_link"] == "https://www.bfarm.de/SharedDocs/Kundeninfos/EN/13/2023/06720-23_kundeninfo_en.pdf?__blob=publicationFile"
 
 
@@ -392,9 +400,10 @@ def test_bfarm_date_range_filter_excludes_out_of_range_records() -> None:
     )
 
     assert record["year"] == 2023
-    assert record["event_date"] == "2023-05-02"
-    assert date_or_year_in_range(record["event_date"], "2023-05-01", "2023-05-31") is True
-    assert date_or_year_in_range(record["event_date"], "2024-01-01", "2024-12-31") is False
+    assert record["event_date"] == ""
+    assert record["search_date"] == "2023-05-02"
+    assert date_or_year_in_range(record["search_date"], "2023-05-01", "2023-05-31") is True
+    assert date_or_year_in_range(record["search_date"], "2024-01-01", "2024-12-31") is False
 
 
 def test_bfarm_search_payload() -> None:

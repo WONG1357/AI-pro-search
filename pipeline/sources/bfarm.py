@@ -349,7 +349,7 @@ def parse_bfarm_results(html: str, page_url: str) -> list[dict[str, Any]]:
                 "title": title,
                 "text": text,
                 "url": _absolute_bfarm_url(page_url, link["href"]) if link else page_url,
-                "date": _clean_labeled_text(date_node.get_text(" ", strip=True)) if date_node else _extract_date(text),
+                "date": _clean_labeled_text(date_node.get_text(" ", strip=True)) if date_node else "",
                 "topic": _clean_labeled_text(topic_node.get_text(" ", strip=True)) if topic_node else "",
                 "notice_type": _clean_labeled_text(type_node.get_text(" ", strip=True)) if type_node else "",
                 "reference": reference,
@@ -364,7 +364,9 @@ def normalize_bfarm_record(raw: dict[str, Any]) -> dict[str, Any]:
     text = str(raw.get("text") or "").strip()
     reference = str(raw.get("reference") or "").strip()
     event_id = reference or _stable_id(title, text, str(raw.get("url") or ""))
-    event_date = format_fda_date(raw.get("date")) or _extract_date(text)
+    publication_date = format_fda_date(raw.get("date"))
+    search_date = publication_date or _extract_date(text)
+    date_basis = "notice_publication_date" if publication_date else "listing_text_date" if search_date else "unknown"
     notice_type = str(raw.get("notice_type") or "Customer information").strip()
     record = {
         "source": SOURCE_NAME,
@@ -372,11 +374,13 @@ def normalize_bfarm_record(raw: dict[str, Any]) -> dict[str, Any]:
         "event_id": event_id,
         "report_number": event_id,
         "date_of_event": "",
-        "date_received": event_date,
-        "report_date": event_date,
-        "event_date": event_date,
-        "year": parse_year_from_date(event_date),
-        "received_year": parse_year_from_date(event_date),
+        "date_received": "",
+        "report_date": publication_date,
+        "event_date": "",
+        "search_date": search_date,
+        "search_date_basis": date_basis,
+        "year": parse_year_from_date(search_date),
+        "received_year": None,
         "country": COUNTRY,
         "manufacturer": _extract_manufacturer(title),
         "product_name": title,
@@ -396,11 +400,11 @@ def normalize_bfarm_record(raw: dict[str, Any]) -> dict[str, Any]:
         "source_category_code": reference,
         "source_category_system": "BfArM expert search",
         "record_hash": "",
-        "source_specific": json.dumps({**raw, "date_basis": "notice_publication_date"}, ensure_ascii=False, default=str),
+        "source_specific": json.dumps({**raw, "date_basis": date_basis}, ensure_ascii=False, default=str),
         "raw_record": json.dumps(raw, ensure_ascii=False, default=str),
     }
     record["record_hash"] = hashlib.sha256(
-        "|".join([str(record.get("source")), str(record.get("event_id")), str(record.get("event_date")), str(record.get("product_name"))]).encode("utf-8")
+        "|".join([str(record.get("source")), str(record.get("event_id")), search_date, str(record.get("product_name"))]).encode("utf-8")
     ).hexdigest()
     return record
 
@@ -417,7 +421,7 @@ def _add_bfarm_records(
         rec["source_query_match"] = True
         if desired_years and rec.get("year") not in desired_years:
             continue
-        if (start_date is not None or end_date is not None) and not date_or_year_in_range(rec.get("event_date"), start_date, end_date):
+        if (start_date is not None or end_date is not None) and not date_or_year_in_range(rec.get("search_date"), start_date, end_date):
             continue
         key = rec["event_id"]
         existing = records_by_key.get(key)

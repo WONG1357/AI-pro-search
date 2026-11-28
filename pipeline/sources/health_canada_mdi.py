@@ -342,6 +342,8 @@ def normalize_health_canada_mdi_record(raw: dict[str, Any], search_url: str | No
         "date_received": receipt_date,
         "report_date": receipt_date,
         "event_date": "",
+        "search_date": receipt_date,
+        "search_date_basis": "receipt_date" if receipt_date else "unknown",
         "year": parse_year_from_date(receipt_date),
         "received_year": parse_year_from_date(receipt_date),
         "country": COUNTRY,

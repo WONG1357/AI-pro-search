@@ -130,12 +130,33 @@ def test_tga_ui_exposes_report_date_without_labelling_it_as_occurrence(monkeypat
 def test_ui_handles_unknown_occurrence_year_for_report_dated_records():
     import app
     frame = clean_records(pd.DataFrame([row("HEALTH_CANADA_MDI", "1", event_date="", date_received="2025-01-05")]))
+    assert frame.iloc[0].search_date_basis == "receipt_date"
     assert frame["year"].isna().all()
     assert not app.column_has_values(frame["year"])
     assert app.display_year_column(frame) == "search_year"
     columns = app.source_table_columns("HEALTH_CANADA_MDI", frame)
     assert "date_received" in columns and "search_year" in columns
     assert "year" not in columns
+
+
+def test_notice_dates_keep_filtering_semantics_without_fabricating_events():
+    frame = clean_records(pd.DataFrame([
+        row("SWISSMEDIC_FSCA", "A", event_date="2025-01-02"),  # legacy normalized row
+        row("MHRA_FSCA", "B", event_date="", search_date="January 2025", search_date_basis="manufacturer_notice_date"),
+        row("BFARM_RECALLS", "C", event_date="", search_date="2025-01-03", search_date_basis="listing_text_date"),
+    ]))
+    assert frame.event_date.tolist() == ["", "", ""]
+    assert frame.year.isna().all()
+    assert frame.search_date.tolist() == ["2025-01-02", "January 2025", "2025-01-03"]
+    assert frame.search_date_basis.tolist() == ["publication_date", "manufacturer_notice_date", "listing_text_date"]
+    assert set(filter_records(frame, ["trocar"], [2025], "2025-01-01", "2025-01-31").event_id) == {"A", "B", "C"}
+
+
+def test_explicit_occurrence_does_not_change_notice_filter_date():
+    frame = clean_records(pd.DataFrame([row("SWISSMEDIC_FSCA", event_date="", date_of_event="2024-12-31", report_date="2025-01-03")]))
+    assert frame.iloc[0].event_date == "2024-12-31"
+    assert frame.iloc[0].search_date == "2025-01-03"
+    assert frame.iloc[0].search_date_basis == "publication_date"
 
 
 def test_keyword_matching_includes_generic_names_and_manufacturers_without_substring_noise():
@@ -153,6 +174,13 @@ def test_string_false_cannot_bypass_keyword_filter():
     assert filter_records(frame, ["unrelated"], [2025]).empty
     frame["source_query_match"] = True
     assert len(filter_records(frame, ["unrelated"], [2025])) == 1
+
+
+def test_date_filter_keeps_empty_record_schema():
+    frame = clean_records(pd.DataFrame([row("FDA_MAUDE", date_received="2024-02-01", source_query_match=True)]))
+    result = filter_records(frame, ["trocar"], [2024], "2024-04-01", "2024-05-31")
+    assert result.empty
+    assert {"source", "event_id", "classification_text", "keyword_hit"} <= set(result.columns)
 
 
 def test_all_failed_partial_and_unverified_progress_are_not_completed():
@@ -183,7 +211,7 @@ def test_pipeline_keeps_partial_records_and_isolates_an_unexpected_source_error(
     assert result["progress"].overall_status == "partial"
 
 
-def test_pipeline_preserves_options_and_per_source_limits(monkeypatch):
+def test_pipeline_preserves_options_and_per_source_limits(monkeypatch, tmp_path):
     from pipeline import pipeline as module
     received = []
     class Good:
@@ -191,15 +219,17 @@ def test_pipeline_preserves_options_and_per_source_limits(monkeypatch):
             received.append(kwargs)
             return SourceFetchResult("A", ensure_unified_columns(pd.DataFrame()), True, completeness="complete")
     monkeypatch.setattr(module, "SOURCE_REGISTRY", {"A": Good})
-    options = {"_global": {"request_timeout": 20, "max_pages": 10, "max_records": 500}, "A": {"request_timeout": 8, "max_records": 1000}}
+    options = {"_global": {"request_timeout": 20, "max_pages": 10, "max_records": 500}, "A": {"request_timeout": 8, "max_records": 1000, "csv_path": "excluded.csv"}}
     original = deepcopy(options)
-    result = run_pipeline(["trocar"], [2025], selected_sources=["A"], source_options=options, export_results=False)
+    result = run_pipeline(["trocar"], [2025], selected_sources=["A"], source_options=options, output_dir=tmp_path)
     assert options == original
     assert received[0]["request_timeout"] == 8
     assert received[0]["max_pages"] == 10
     assert received[0]["max_records"] == 1000
     assert result["progress"].overall_status == "completed"
     assert result["source_status"].iloc[0].completeness == "complete"
+    manifest = json.loads(result["export_files"]["manifest"].read_text())
+    assert manifest["query"]["source_limits"] == {"A": {"request_timeout": 8, "max_pages": 10, "max_records": 1000}}
 
 
 def test_pipeline_uses_device_identity_for_retrieval_and_retains_classification_terms(monkeypatch):

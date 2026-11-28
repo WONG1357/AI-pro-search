@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from cloud_agent.assessment import render_assessment
+from cloud_agent.assessment import ASSESSMENT_FORMAT_VERSION, render_assessment
 from cloud_agent.table_integrity import verify_tables
 
 
@@ -74,7 +74,10 @@ def verify_report(folder: Path, *, require_assessment: bool = False) -> dict:
     if require_assessment:
         rows = {r["evidence_id"]: r for r in evidence + supplemental}
         assessment = json.loads((folder / "assessment.json").read_text(encoding="utf-8"))
-        rendered = render_assessment(assessment, rows)
+        assessment_format = manifest.get("assessment_format_version", 1)
+        if type(assessment_format) is not int or assessment_format not in {1, ASSESSMENT_FORMAT_VERSION}:
+            raise ValueError("Unsupported assessment Markdown format version")
+        rendered = render_assessment(assessment, rows, overview=overview if assessment_format == ASSESSMENT_FORMAT_VERSION else None)
         if (folder / "assessment.md").read_text(encoding="utf-8") != rendered:
             raise ValueError("Assessment Markdown differs from the cited assessment")
         kinds = Counter(row["record_kind"] for row in evidence)

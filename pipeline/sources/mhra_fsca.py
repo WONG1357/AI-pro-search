@@ -266,7 +266,7 @@ def fetch_mhra_fsca_direct(
                     record["source_query_match"] = True
                     if years and record.get("year") not in years:
                         continue
-                    if (start_date is not None or end_date is not None) and not date_or_year_in_range(record.get("event_date"), start_date, end_date):
+                    if (start_date is not None or end_date is not None) and not date_or_year_in_range(record.get("search_date"), start_date, end_date):
                         continue
                     key = record["event_id"]
                     if key not in seen_records:
@@ -345,12 +345,13 @@ def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
         "event_id": event_id,
         "report_number": event_id,
         "date_of_event": "",
-        "date_received": report_date,
+        "date_received": "",
         "report_date": report_date,
-        "event_date": issued_date,
+        "event_date": "",
+        "search_date": issued_date,
         "search_date_basis": date_basis,
         "year": parse_year_from_date(issued_date),
-        "received_year": parse_year_from_date(report_date),
+        "received_year": None,
         "country": COUNTRY,
         "manufacturer": manufacturer,
         "product_name": product or heading,
@@ -439,7 +440,7 @@ def _record_hash(record: dict[str, Any]) -> str:
             [
                 str(record.get("source", "")),
                 str(record.get("event_id", "")),
-                str(record.get("event_date", "")),
+                str(record.get("search_date", "")),
                 str(record.get("product_name", "")),
             ]
         ).encode("utf-8")

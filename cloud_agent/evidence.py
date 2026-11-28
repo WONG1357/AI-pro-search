@@ -13,7 +13,7 @@ from uuid import uuid4
 import pandas as pd
 
 from cloud_agent.schema import SearchRequest, SOURCE_DOMAINS, SOURCE_INFO
-from cloud_agent.assessment import _md, _text, render_assessment
+from cloud_agent.assessment import ASSESSMENT_FORMAT_VERSION, _md, _text, render_assessment
 from cloud_agent.integrity import verify_report
 from pipeline.export import export_pipeline_results
 
@@ -39,15 +39,17 @@ def official_url(value: object, source: str) -> str | None:
     return url
 
 
-def _direct_url(record: dict, source: str) -> str | None:
+def direct_record_url(record: dict, source: str) -> str | None:
+    """Return an official record-level link, excluding source search and listing pages."""
     for field in ("event_link", "device_link", "raw_link"):
         candidate = official_url(record.get(field), source)
         if not candidate:
             continue
-        path = urlsplit(candidate).path.lower()
-        # A portal is a locator, never a record-specific citation. Swissmedic's
-        # device_link can provide an official notice PDF even when event_link is a portal.
-        if path.endswith(("mdi_results.php", "daen-entry.aspx", "search.cfm", "/drug-device-alerts", "/mep/", "/mep")):
+        path = urlsplit(candidate).path.lower().rstrip("/")
+        if path.endswith(("mdi_results.php", "daen-entry.aspx", "search.cfm", "/drug-device-alerts",
+                          "/mep", "/expertensuche_formular.html")):
+            continue
+        if source == "MHRA_FSCA" and path.startswith("/drug-device-alerts/field-safety-notices"):
             continue
         return candidate
     return None
@@ -77,7 +79,7 @@ def build_evidence(records: pd.DataFrame, retrieved_at: str) -> list[dict]:
             "report_date": _text(record.get("report_date") or record.get("date_received")),
             "search_date": _text(record.get("search_date")),
             "search_date_basis": _text(record.get("search_date_basis")),
-            "direct_record_url": _direct_url(record, source),
+            "direct_record_url": direct_record_url(record, source),
             "source_locator_url": official_url(record.get("raw_link"), source) or SOURCE_INFO[source][1],
             "source_portal": SOURCE_INFO[source][1],
             "retrieved_at": retrieved_at,
@@ -100,7 +102,7 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
 
 
-def _manifest(folder: Path, run_id: str, *, status: str) -> dict:
+def _manifest(folder: Path, run_id: str, *, status: str, assessment_format_version: int | None = None) -> dict:
     files = {}
     for path in sorted(folder.rglob("*")):
         if not path.is_file() or path == folder / "manifest.json":
@@ -110,6 +112,8 @@ def _manifest(folder: Path, run_id: str, *, status: str) -> dict:
         relative = path.relative_to(folder).as_posix()
         files[relative] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": path.stat().st_size}
     manifest = {"schema_version": 1, "run_id": run_id, "status": status, "files": files}
+    if assessment_format_version is not None:
+        manifest["assessment_format_version"] = assessment_format_version
     _write_json(folder / "manifest.json", manifest)
     return manifest
 
@@ -195,11 +199,12 @@ def add_assessment(folder: Path, assessment: dict) -> Path:
     supplemental = folder / "supplemental_evidence.json"
     if supplemental.is_file():
         evidence.update({r["evidence_id"]: r for r in json.loads(supplemental.read_text(encoding="utf-8"))})
+    overview = json.loads((folder / "overview.json").read_text(encoding="utf-8"))
     destination = folder / "assessment.md"
-    destination.write_text(render_assessment(assessment, evidence), encoding="utf-8")
+    destination.write_text(render_assessment(assessment, evidence, overview=overview), encoding="utf-8")
     _write_json(folder / "assessment.json", assessment)
-    previous = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
-    _manifest(folder, previous["run_id"], status=previous["status"])
+    _manifest(folder, overview["run_id"], status=overview["status"],
+              assessment_format_version=ASSESSMENT_FORMAT_VERSION)
     verify_report(folder)
     return destination
 
@@ -209,6 +214,8 @@ def add_supplements(folder: Path, entries: list[dict]) -> dict:
     from cloud_agent.supplement import fetch_official_document
     from cloud_agent.collector import redact
     verify_report(folder)
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    assessment_format = manifest.get("assessment_format_version")
     if not isinstance(entries, list) or not entries or len(entries) > 5:
         raise ValueError("Supply one to five explicit official document links")
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
@@ -262,6 +269,13 @@ def add_supplements(folder: Path, entries: list[dict]) -> dict:
         lines += ["", "## Failed document attempts", ""]
         lines += [f"- {_md(error['source'])}: {_md(error['error'])}" for error in errors]
     (folder / "supplemental.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _manifest(folder, overview["run_id"], status=overview["status"])
+    if assessment_format == ASSESSMENT_FORMAT_VERSION:
+        assessment = json.loads((folder / "assessment.json").read_text(encoding="utf-8"))
+        primary = json.loads((folder / "evidence.json").read_text(encoding="utf-8"))
+        assessment_rows = {row["evidence_id"]: row for row in primary + evidence}
+        markdown = render_assessment(assessment, assessment_rows, overview=overview)
+        (folder / "assessment.md").write_text(markdown, encoding="utf-8")
+    _manifest(folder, overview["run_id"], status=overview["status"],
+              assessment_format_version=assessment_format)
     verify_report(folder)
     return {"supplemental_documents": len(evidence), "failed_attempts": len(errors), "status": overview["status"], "coverage": "unverified"}

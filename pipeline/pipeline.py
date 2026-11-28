@@ -75,7 +75,7 @@ def run_pipeline(
              "start_date": str(start_date) if start_date is not None else None,
              "end_date": str(end_date) if end_date is not None else None,
              "classifier_profile": classifier_profile, "components": components or [],
-             "accident_terms": accident_terms or []}
+             "accident_terms": accident_terms or [], "source_limits": {}}
 
     for source_id in selected_sources:
         connector_cls = SOURCE_REGISTRY.get(source_id)
@@ -88,6 +88,12 @@ def run_pipeline(
         progress_reporter.start_source(source_id, message="Source queued")
         options = dict(request_timeout=request_timeout, max_pages=max_pages, max_records=max_records, debug=debug)
         options.update(source_options.get(source_id, {}))
+        # Keep applied request settings without serializing connector sessions or paths.
+        query["source_limits"][source_id] = {
+            key: value for key, value in options.items()
+            if key in {"request_timeout", "max_pages", "max_records", "page_size", "limit_per_query", "max_skip_per_query"}
+            and type(value) in (int, float)
+        }
         # Reserved query fields cannot be replaced by source tuning options.
         options.update(keywords=keywords, years=years, components=None,
                        accident_terms=None, progress_reporter=progress_reporter,
@@ -316,27 +322,38 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
     missing_report_date = cleaned["report_date"].fillna("").astype(str).str.strip() == ""
     cleaned.loc[missing_report_date, "report_date"] = cleaned.loc[missing_report_date, "date_received"]
 
+    # Older notice rows stored the source publication or issue date in event_date.
+    notice_dates = cleaned["search_date"].where(cleaned["search_date"].ne(""), cleaned["event_date"])
+    notice_dates = notice_dates.where(notice_dates.ne(""), cleaned["report_date"])
     missing_event_date = cleaned["event_date"].fillna("").astype(str).str.strip() == ""
     cleaned.loc[missing_event_date, "event_date"] = cleaned.loc[missing_event_date, "date_of_event"]
 
+    source = cleaned.get("source", pd.Series("", index=cleaned.index)).fillna("").astype(str)
+    report_date_sources = source.isin(["FDA_MAUDE", "TGA_DAEN", "HEALTH_CANADA_MDI"])
+    notice_basis = source.map({"MHRA_FSCA": "source_issued_date", "SWISSMEDIC_FSCA": "publication_date",
+                               "BFARM_RECALLS": "notice_publication_date"})
+    notices = notice_basis.notna()
+    supplied_basis = cleaned.get("search_date_basis", pd.Series("", index=cleaned.index))
+    cleaned["search_date"] = cleaned["event_date"].where(~report_date_sources, cleaned["report_date"])
+    cleaned["search_date_basis"] = "event_date"
+    cleaned.loc[notices, "search_date"] = notice_dates[notices]
+    has_notice_basis = (
+        source.eq("MHRA_FSCA") & supplied_basis.isin(["manufacturer_notice_date", "weekly_publication_date", "source_issued_date"])
+        | source.eq("BFARM_RECALLS") & supplied_basis.eq("listing_text_date")
+    )
+    cleaned.loc[notices, "search_date_basis"] = supplied_basis.where(has_notice_basis, notice_basis)[notices]
+    cleaned.loc[notices, "event_date"] = cleaned.loc[notices, "date_of_event"]
+    cleaned.loc[report_date_sources, "search_date_basis"] = "report_date"
+    cleaned.loc[source.eq("HEALTH_CANADA_MDI"), "search_date_basis"] = "receipt_date"
+    missing_search_date = cleaned["search_date"].fillna("").astype(str).str.strip() == ""
+    cleaned.loc[missing_search_date, "search_date"] = cleaned.loc[missing_search_date, "report_date"]
+    cleaned.loc[missing_search_date, "search_date_basis"] = "report_date_fallback"
+    cleaned.loc[cleaned["search_date"].eq(""), "search_date_basis"] = "unknown"
     cleaned["year"] = pd.to_numeric(cleaned["event_date"].apply(parse_year_from_date), errors="coerce").astype("Int64")
     cleaned["received_year"] = pd.to_numeric(
         cleaned["date_received"].apply(parse_year_from_date),
         errors="coerce",
     ).astype("Int64")
-    source = cleaned.get("source", pd.Series("", index=cleaned.index)).fillna("").astype(str)
-    report_date_sources = source.isin(["FDA_MAUDE", "TGA_DAEN"])
-    cleaned["search_date"] = cleaned["event_date"].where(~report_date_sources, cleaned["report_date"])
-    input_basis = cleaned.get("search_date_basis", pd.Series("", index=cleaned.index))
-    mhra_dates = source.eq("MHRA_FSCA") & input_basis.isin(
-        ["manufacturer_notice_date", "weekly_publication_date", "source_issued_date"]
-    )
-    cleaned["search_date_basis"] = input_basis.where(mhra_dates, "event_date")
-    cleaned.loc[report_date_sources, "search_date_basis"] = "report_date"
-    missing_search_date = cleaned["search_date"].fillna("").astype(str).str.strip() == ""
-    cleaned.loc[missing_search_date, "search_date"] = cleaned.loc[missing_search_date, "report_date"]
-    cleaned.loc[missing_search_date, "search_date_basis"] = "report_date_fallback"
-    cleaned.loc[cleaned["search_date"].eq(""), "search_date_basis"] = "unknown"
     cleaned["search_year"] = pd.to_numeric(
         cleaned["search_date"].apply(parse_year_from_date),
         errors="coerce",
@@ -387,14 +404,14 @@ def filter_records(
         date_basis = filtered.get("search_date", filtered["event_date"])
         date_mask = date_basis.apply(lambda value: date_or_year_in_range(value, start_date, end_date))
         filtered = filtered[date_mask | filtered_device_registry].copy()
-    filtered["keyword_hit"] = filtered["combined_text"].apply(lambda text: contains_any_keyword(text, keywords))
+    filtered["keyword_hit"] = filtered["combined_text"].apply(lambda text: contains_any_keyword(text, keywords)).astype(bool)
     if "source_query_match" in filtered.columns:
         source_match = filtered["source_query_match"].apply(
             lambda value: value is True or isinstance(value, (int, float)) and value == 1
             or isinstance(value, str) and value.strip().lower() in {"true", "1"}
         )
-        filtered.loc[source_match, "keyword_hit"] = True
-    return filtered[filtered["keyword_hit"]].copy()
+        filtered.loc[source_match.astype(bool), "keyword_hit"] = True
+    return filtered.loc[filtered["keyword_hit"]].copy()
 
 
 def deduplicate_records(df: pd.DataFrame) -> pd.DataFrame:
