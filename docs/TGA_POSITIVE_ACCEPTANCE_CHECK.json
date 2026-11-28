@@ -68,5 +68,33 @@
       "error_count": 0
     },
     "scope": "The portal result reconciles the one-report total for this exact December 2020 query. The 15-report historical total uses a broader date range. The positive HTML run did not exercise a second portal page or a live PDF-only response."
+  },
+  "live_pagination_verification": {
+    "status": "second_html_page_unverified",
+    "historical_range_probe": {
+      "commit": "0cbc9831454161c8bc69d2bdcb305165f7ab7887",
+      "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46138851727/job/140960093021",
+      "checked_at_utc": "2026-11-28T11:14:32Z",
+      "artg_search_term": "339475",
+      "start_date": "2020-01-01",
+      "end_date": "2022-12-31",
+      "requested_page_size": 5,
+      "max_pages": 4,
+      "max_reports": 25,
+      "expected_report_count": 15,
+      "retained_report_count": 15,
+      "reference_report_found": true,
+      "coverage": "complete",
+      "content_type": "text/html; charset=utf-8",
+      "html_report_pages_parsed": [1],
+      "interpretation": "The live endpoint returned all 15 reports on one page. The second-page assertion exited nonzero, while the separate regression suite passed."
+    },
+    "larger_probe": {
+      "artg_search_term": "175422",
+      "artg_reference": "https://www.tga.gov.au/sites/default/files/biomaterials-and-engineering-laboratory-report-non-active-mammary-implants.pdf",
+      "start_date": "2014-01-01",
+      "end_date": "2022-12-31",
+      "budget": {"page_size": 5, "max_pages": 4, "max_reports": 150, "request_timeout_seconds": 15, "step_timeout_minutes": 3}
+    }
   }
 }
