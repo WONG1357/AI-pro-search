@@ -70,7 +70,7 @@
     "scope": "The portal result reconciles the one-report total for this exact December 2020 query. The 15-report historical total uses a broader date range. The positive HTML run did not exercise a second portal page or a live PDF-only response."
   },
   "live_pagination_verification": {
-    "status": "second_html_page_unverified",
+    "status": "live_html_pagination_verified",
     "historical_range_probe": {
       "commit": "0cbc9831454161c8bc69d2bdcb305165f7ab7887",
       "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46138851727/job/140960093021",
@@ -94,7 +94,22 @@
       "artg_reference": "https://www.tga.gov.au/sites/default/files/biomaterials-and-engineering-laboratory-report-non-active-mammary-implants.pdf",
       "start_date": "2014-01-01",
       "end_date": "2022-12-31",
-      "budget": {"page_size": 5, "max_pages": 4, "max_reports": 150, "request_timeout_seconds": 15, "step_timeout_minutes": 3}
+      "budget": {"page_size": 5, "max_pages": 4, "max_reports": 150, "request_timeout_seconds": 15, "step_timeout_minutes": 3},
+      "github_actions_result": {
+        "commit": "4859ec3ca15479758e8d652de72b60d787afc996",
+        "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46139047307/job/140960698275",
+        "checked_at_utc": "2026-11-28T11:16:35Z",
+        "selected_device_count": 19,
+        "effective_start": "2014-01-01",
+        "effective_end": "2022-12-31",
+        "expected_report_count": 69,
+        "retained_report_count": 69,
+        "coverage": "complete",
+        "response_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-report.aspx",
+        "content_type": "text/html; charset=utf-8",
+        "html_report_pages_parsed": [1, 2, 3],
+        "live_pagination_verified": true
+      }
     }
   }
 }

@@ -130,7 +130,7 @@ Counts describe retrieved reports/notices. They are not unique patient counts, i
 | Source | Preserved capability | Coverage limit / latest check |
 | --- | --- | --- |
 | FDA MAUDE | Official openFDA retrieval, identity/narrative search, normalization and record links | Endpoint and a small full toolkit run succeeded; requested caps correctly returned partial coverage |
-| TGA DAEN | Device selection, report/print retrieval, HTML/PDF parsing | A live December 2020 check retrieved the expected report and reconciled the portal's one-report total. The earlier Versaport/2024 query returned a source-confirmed zero. Fixtures cover PDF parsing and pagination |
+| TGA DAEN | Device selection, report/print retrieval, HTML/PDF parsing | A live December 2020 check retrieved the expected report. A separate live query reconciled all 69 reports across three HTML pages. Fixtures cover the PDF parser |
 | Health Canada MDI | Public DataTables retrieval, paging, native fields | Endpoint and bounded worker run succeeded; limited pages can contain records outside the requested period |
 | Swissmedic | Official publication search and notice links | Bounded full toolkit run returned two records and correctly marked the cap as partial; OpenAI-hosted acceptance remains separate |
 | MHRA | Official alert/weekly-notice parsing | The date filter uses the manufacturer notice date when the listing supplies it and records the weekly publication date separately. HTML listing coverage remains unverified |
