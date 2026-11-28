@@ -547,8 +547,18 @@ def delete_session(state_path: Path, *, client: Any = None, allow_without_downlo
     state = _load_state(state_path)
     if state.get("status") == "deleted":
         return state
-    if not allow_without_download and not state.get("artifacts_downloaded_at"):
-        raise RuntimeError("Download the artifacts before deleting the hosted session")
+    if not allow_without_download:
+        from cloud_agent.integrity import sha256_file, verify_downloads
+
+        if not state.get("artifacts_downloaded_at") or not state.get("artifacts"):
+            raise RuntimeError("Download the artifacts before deleting the hosted session")
+        paths = []
+        for artifact in state["artifacts"]:
+            path = Path(artifact["local_path"])
+            if not path.is_file() or path.is_symlink() or sha256_file(path) != artifact["sha256"]:
+                raise RuntimeError("Retained artifact is unavailable or changed; download and verify before cleanup")
+            paths.append(path)
+        verify_downloads(paths)
     with _client_scope(client) as active:
         _refresh(active, state)
         if not state.get("session_id"):

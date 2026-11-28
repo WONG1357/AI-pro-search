@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 
 from pipeline.config import (
     TGA_DAEN_BASE_URL,
@@ -42,6 +43,38 @@ logger = logging.getLogger(__name__)
 TGA_DAEN_SOURCE_NAME = "TGA_DAEN"
 TGA_DAEN_SOURCE_TYPE = "regulatory_adverse_event"
 TGA_DAEN_COUNTRY = "Australia"
+
+_REPORT_FIELD_NAMES = {
+    "report number": "report_number",
+    "report #": "report_number",
+    "report#": "report_number",
+    "report": "report_number",
+    "report date": "report_date",
+    "date": "report_date",
+    "trade name": "trade_name",
+    "sponsor": "sponsor",
+    "manufacturer": "manufacturer",
+    "artg number": "artg_number",
+    "gmdn term": "gmdn_term",
+    "device classification": "device_classification",
+    "sterile": "sterile",
+    "single use": "single_use",
+    "model number": "model_ref",
+    "model/ref": "model_ref",
+    "model / ref": "model_ref",
+    "software version": "software_version",
+    "event description": "event_description",
+    "reported event outcome": "outcome",
+    "outcome": "outcome",
+    "report source category": "report_source_category",
+    "event type": "event_type",
+    "other medical devices reported as being used": "other_medical_devices",
+}
+_REPORT_FIELD_LINE = re.compile(
+    r"^(?P<name>" + "|".join(map(re.escape, sorted(_REPORT_FIELD_NAMES, key=len, reverse=True)))
+    + r")(?:\s*[ivx]{1,4})?(?:\s*:\s*|\s+|$)(?P<value>.*)$",
+    re.I,
+)
 
 
 @dataclass
@@ -335,9 +368,14 @@ def parse_tga_search_result_counts(html: str) -> dict[str, Any]:
     visible_html = re.sub(r"<(script|style|template)\b[^>]*>.*?</\1\s*>", " ", html, flags=re.I | re.S)
     visible_html = re.sub(r"<!--.*?-->", " ", visible_html, flags=re.S)
     text = unescape(_strip_tags(visible_html))
-    selected_match = re.search(r"(\d+)\s+medical devices selected.*?(\d{2}/\d{2}/\d{4}).*?-\s*(\d{2}/\d{2}/\d{4})", text, re.S | re.I)
-    reports_match = re.search(r"Number of reports:\s*(\d+)", text, re.I)
-    report_count = int(reports_match.group(1)) if reports_match else None
+    selected_match = re.search(
+        r"(\d+)\s+medical devices?\s+(?:selected\b[^\d]*|between\s+)"
+        r"(\d{1,2}/\d{1,2}/\d{4})\s*(?:[-–—]|to)\s*(\d{1,2}/\d{1,2}/\d{4})",
+        text,
+        re.I,
+    )
+    reports_match = re.search(r"Number of reports:\s*(\d+(?:,\d{3})*)", text, re.I)
+    report_count = int(reports_match.group(1).replace(",", "")) if reports_match else None
     return {
         "selected_devices_count": int(selected_match.group(1)) if selected_match else None,
         "expected_report_count": report_count,
@@ -357,7 +395,7 @@ def find_tga_list_of_reports_url(html: str, base_url: str) -> str | None:
 
 def find_tga_print_version_url(html: str, base_url: str) -> str | None:
     """Find the URL for the print version of the DAEN report."""
-    return _find_link_by_text(html, base_url, ["print version of this report", "print version", "print"])
+    return _find_link_by_text(html, base_url, ["print version of this report", "print version", "print"], prefer_javascript=True)
 
 
 def fetch_tga_print_report(
@@ -434,6 +472,19 @@ def parse_tga_print_report_html(html: str, debug: bool = False) -> list[dict[str
     summary_records = parse_tga_report_summary_html(html)
     if summary_records:
         return summary_records
+    detail_records = []
+    for table in BeautifulSoup(html, "html.parser").find_all("table"):
+        fields = []
+        for row in table.find_all("tr"):
+            if row.find_parent("table") is not table:
+                continue
+            cells = row.find_all(["td", "th"], recursive=False)
+            if len(cells) == 2:
+                label, value = (cell.get_text(" ", strip=True) for cell in cells)
+                fields.append(f"{label}: {value}")
+        detail_records.extend(_parse_daen_report_blocks("\n".join(fields)))
+    if detail_records:
+        return detail_records
     tables = _extract_html_tables(html)
     records: list[dict[str, Any]] = []
     for table in tables:
@@ -442,7 +493,7 @@ def parse_tga_print_report_html(html: str, debug: bool = False) -> list[dict[str
             continue
         if any("report" in header for header in headers) and any("description" in header for header in headers):
             for row in table["rows"]:
-                record = {headers[idx]: row[idx] if idx < len(row) else "" for idx in range(len(headers))}
+                record = {_normalize_tga_report_header(header): row[idx] for idx, header in enumerate(headers) if idx < len(row)}
                 records.append(_normalize_report_row(record))
     if records:
         return records
@@ -462,20 +513,10 @@ def parse_tga_report_summary_html(html: str, base_url: str = "") -> list[dict[st
         for row_html in table["rows"]:
             row = [_html_cell_text(cell) for cell in row_html]
             raw = {headers[idx]: row[idx] if idx < len(row) else "" for idx in range(len(headers))}
-            report_cell = row_html[headers.index("report_number")] if "report_number" in headers and headers.index("report_number") < len(row_html) else ""
-            report_link = _extract_first_href(report_cell, base_url)
             records.append(
                 _normalize_report_row(
                     {
-                        "report_number": raw.get("report_number", ""),
-                        "report_date": raw.get("report_date", ""),
-                        "trade_name": raw.get("trade_name", ""),
-                        "manufacturer": raw.get("manufacturer", ""),
-                        "sponsor": raw.get("sponsor", ""),
-                        "artg_number": raw.get("artg_number", ""),
-                        "gmdn_term": raw.get("gmdn_term", ""),
-                        "event_description": raw.get("gmdn_term", "") or raw.get("trade_name", ""),
-                        "outcome": "",
+                        **raw,
                         "event_link": "",
                     }
                 )
@@ -492,7 +533,8 @@ def normalize_tga_daen_report(raw_report: dict[str, Any], metadata: dict[str, An
     trade_name = _first_value(raw_report, ["trade_name", "product_name", "product", "device", "name"])
     model_ref = _first_value(raw_report, ["model/ref", "model_ref", "model", "device_model"])
     event_description = _first_value(raw_report, ["event description", "event_description", "description", "summary", "narrative_text"])
-    outcome = _first_value(raw_report, ["outcome", "event_type", "patient_outcome"])
+    outcome = _first_value(raw_report, ["outcome", "patient_outcome"])
+    event_type = _first_value(raw_report, ["event_type"]) or outcome
     manufacturer = _first_value(raw_report, ["manufacturer", "sponsor", "company"]) or metadata.get("manufacturer", "")
     product_code = _first_value(raw_report, ["artg_number", "product_code", "artg", "code"])
     generic_name = _first_value(raw_report, ["gmdn_term", "generic_name", "gmdn"])
@@ -517,7 +559,7 @@ def normalize_tga_daen_report(raw_report: dict[str, Any], metadata: dict[str, An
         "generic_name": generic_name,
         "device_model": model_ref,
         "product_code": product_code,
-        "event_type": outcome,
+        "event_type": event_type,
         "patient_outcome": outcome,
         "device_problem_text": event_description,
         "patient_problem_text": "",
@@ -609,6 +651,11 @@ def fetch_tga_daen_direct(
         return {"records": empty_df, "warnings": warnings, "metadata": date_metadata, "raw_text": ""}
 
     selected_device_ids = _extract_device_ids(device_matches)
+    requested_scope = {
+        "selected_devices_count": len(selected_device_ids),
+        "search_start_date": start_text,
+        "search_end_date": end_text,
+    }
     if progress_reporter:
         progress_reporter.update_source(
             TGA_DAEN_SOURCE_NAME,
@@ -632,9 +679,6 @@ def fetch_tga_daen_direct(
         )
 
     search_counts = parse_tga_search_result_counts(search_response.text or "")
-    warnings.append(f"selected_devices_count={search_counts.get('selected_devices_count')}")
-    warnings.append(f"expected_report_count={search_counts.get('expected_report_count')}")
-
     list_url = find_tga_list_of_reports_url(search_response.text or "", search_response.url)
     print_url = find_tga_print_version_url(search_response.text or "", search_response.url)
     report_source_url = search_response.url
@@ -653,25 +697,15 @@ def fetch_tga_daen_direct(
         content_type = search_response.headers.get("Content-Type", "text/html").lower()
         final_url = search_response.url
     else:
-        report_source = print_url or list_url or search_response.url
-        if report_source.lower().startswith("javascript:"):
-            report_content, content_type, final_url = fetch_tga_print_report(
-                report_source,
-                session=session,
-                debug=debug,
-                client_config=config,
-                source_html=search_response.text or "",
-                source_url=search_response.url,
-            )
-        else:
-            report_content, content_type, final_url = fetch_tga_print_report(
-                report_source,
-                session=session,
-                debug=debug,
-                client_config=config,
-                source_html=search_response.text or "",
-                source_url=search_response.url,
-            )
+        report_source = list_url or print_url or search_response.url
+        report_content, content_type, final_url = fetch_tga_print_report(
+            report_source,
+            session=session,
+            debug=debug,
+            client_config=config,
+            source_html=search_response.text or "",
+            source_url=search_response.url,
+        )
     warnings.append(f"print_report_url={final_url}")
     warnings.append(f"content_type={content_type}")
 
@@ -696,9 +730,32 @@ def fetch_tga_daen_direct(
         max_pages=max_pages,
         max_records=max_reports,
         warnings=warnings,
+        requested_scope=requested_scope,
     )
     if extracted_text and "pdf" in content_type:
         warnings.append(f"pdf_text_length={len(extracted_text)}")
+
+    report_counts = parse_tga_search_result_counts(
+        extracted_text if "pdf" in content_type or report_content.startswith(b"%PDF")
+        else report_content.decode("utf-8", errors="replace")
+    )
+    scope_verified = False
+    for counts in (search_counts, report_counts):
+        for field, requested in requested_scope.items():
+            echoed = counts.get(field)
+            if echoed is not None and echoed != requested:
+                raise RuntimeError(f"TGA query echo mismatch for {field}: requested {requested}, received {echoed}")
+        scope_verified |= all(counts.get(field) == requested for field, requested in requested_scope.items())
+
+    expected_count = search_counts.get("expected_report_count")
+    report_view_count = report_counts.get("expected_report_count")
+    if expected_count is None:
+        expected_count = report_view_count
+    elif report_view_count is not None and report_view_count != expected_count:
+        warnings.append("TGA report totals disagreed between the search and report views; coverage incomplete")
+    selected_count = search_counts.get("selected_devices_count") or report_counts.get("selected_devices_count")
+    warnings.append(f"selected_devices_count={selected_count}")
+    warnings.append(f"expected_report_count={expected_count}")
 
     if progress_reporter:
         progress_reporter.update_source(
@@ -708,15 +765,12 @@ def fetch_tga_daen_direct(
         )
 
     if not raw_rows:
-        expected = search_counts.get("expected_report_count")
         verified_empty = (
-            expected == 0 and search_counts.get("zero_reports_confirmed")
-            and search_counts.get("search_start_date") == start_text
-            and search_counts.get("search_end_date") == end_text
-            and search_counts.get("selected_devices_count") == len(selected_device_ids)
+            expected_count == 0 and report_view_count in (None, 0) and scope_verified
+            and (search_counts.get("zero_reports_confirmed") or report_counts.get("zero_reports_confirmed"))
         )
         if not verified_empty:
-            raise RuntimeError(f"TGA report parsing yielded zero rows while expected count is {expected!r}; this is not a verified empty result for the requested query")
+            raise RuntimeError(f"TGA report parsing yielded zero rows while expected count is {expected_count!r}; this is not a verified empty result for the requested query")
         warnings.append(
             f"TGA DAEN found {len(selected_device_ids)} selected devices but returned 0 reports for date range {start_text} to {end_text}"
         )
@@ -731,8 +785,8 @@ def fetch_tga_daen_direct(
             "print_report_link": final_url,
             "search_start_date": start_text,
             "search_end_date": end_text,
-            "selected_devices_count": search_counts.get("selected_devices_count"),
-            "expected_report_count": search_counts.get("expected_report_count"),
+            "selected_devices_count": selected_count,
+            "expected_report_count": expected_count,
             "zero_reports_confirmed": True,
             "report_generation_date": _find_report_generation_date(extracted_text or ""),
         }
@@ -752,8 +806,8 @@ def fetch_tga_daen_direct(
         "print_report_link": final_url,
         "search_start_date": start_text,
         "search_end_date": end_text,
-        "selected_devices_count": search_counts.get("selected_devices_count"),
-        "expected_report_count": search_counts.get("expected_report_count"),
+        "selected_devices_count": selected_count,
+        "expected_report_count": expected_count,
         "report_generation_date": _find_report_generation_date(extracted_text or ""),
     }
     normalized_rows = [normalize_tga_daen_report(row, metadata) for row in raw_rows]
@@ -761,8 +815,8 @@ def fetch_tga_daen_direct(
     if not df.empty:
         df["source_query_match"] = True
         df["source_query_terms"] = ", ".join(terms)
-        df["selected_devices_count"] = search_counts.get("selected_devices_count") or len(selected_device_ids)
-        df["expected_report_count"] = search_counts.get("expected_report_count")
+        df["selected_devices_count"] = selected_count or len(selected_device_ids)
+        df["expected_report_count"] = expected_count
     if "report_number" in df.columns:
         df = df[df["report_number"].astype(str).str.strip() != ""].copy()
         df = df.drop_duplicates(subset=["report_number"], keep="first")
@@ -776,7 +830,6 @@ def fetch_tga_daen_direct(
         df = _filter_by_date_range(df, start_text, end_text)
 
     parsed_count = len(df)
-    expected_count = search_counts.get("expected_report_count")
     if progress_reporter:
         progress_reporter.update_source(
             TGA_DAEN_SOURCE_NAME,
@@ -803,7 +856,9 @@ def fetch_tga_daen_direct(
     incomplete = any("incomplete" in message.lower() or "Stopped at" in message for message in warnings)
     if expected_count is not None and parsed_count != expected_count:
         incomplete = True
-    coverage = "partial" if incomplete else "complete" if expected_count is not None else "unverified"
+    if not scope_verified:
+        warnings.append("TGA did not echo the full requested report-date interval and selected-device count")
+    coverage = "partial" if incomplete else "complete" if expected_count is not None and scope_verified else "unverified"
     with_coverage(df, coverage, warnings, retrieved_count=len(raw_rows), total_available=expected_count)
     df.attrs.update(date_metadata)
     return {"records": df, "warnings": warnings, "metadata": metadata, "raw_text": extracted_text or ""}
@@ -820,6 +875,7 @@ def _fetch_tga_report_rows(
     max_pages: int | None = None,
     max_records: int | None = None,
     warnings: list[str] | None = None,
+    requested_scope: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Fetch and parse all paginated DAEN report rows from the summary table."""
     all_rows: list[dict[str, Any]] = []
@@ -841,7 +897,15 @@ def _fetch_tga_report_rows(
     max_pages = max_pages or 100
     if max_pages < 1 or (max_records is not None and max_records < 1):
         raise ValueError("TGA retrieval limits must be positive")
-    last_page_hash = None
+    first_counts = parse_tga_search_result_counts(current_html)
+    report_scope = {
+        "selected_devices_count": first_counts.get("selected_devices_count"),
+        "search_start_date": first_counts.get("search_start_date"),
+        "search_end_date": first_counts.get("search_end_date"),
+        "expected_report_count": first_counts.get("expected_report_count"),
+        **(requested_scope or {}),
+    }
+    previous_status: tuple[int, int] | None = None
 
     while page_index <= max_pages:
         page_hash = hashlib.sha256(current_html.encode("utf-8")).hexdigest()
@@ -849,7 +913,19 @@ def _fetch_tga_report_rows(
             warnings.append("TGA repeated a report page; coverage incomplete")
             break
         seen_pages.add(page_hash)
-        last_page_hash = page_hash
+        current_status = _extract_tga_page_status(current_html)
+        current_counts = parse_tga_search_result_counts(current_html)
+        if any(
+            current_counts.get(key) is not None and expected is not None
+            and current_counts[key] != expected
+            for key, expected in report_scope.items()
+        ):
+            warnings.append("TGA report scope or total changed during pagination; coverage incomplete")
+            break
+        if previous_status and current_status and current_status != (previous_status[0] + 1, previous_status[1]):
+            warnings.append("TGA report page number or total changed unexpectedly during pagination; coverage incomplete")
+            break
+        previous_status = current_status
         rows = parse_tga_report_summary_html(current_html) or parse_tga_print_report_html(current_html, debug=debug)
         if not rows:
             rows = parse_tga_print_report_text(_strip_tags(current_html), debug=debug)
@@ -861,7 +937,7 @@ def _fetch_tga_report_rows(
                 new_rows.append(row)
                 seen_numbers.add(report_number)
         if not new_rows:
-            if all_rows or not parse_tga_search_result_counts(current_html).get("zero_reports_confirmed"):
+            if all_rows or not current_counts.get("zero_reports_confirmed"):
                 warnings.append("TGA report page had no new report rows; coverage incomplete")
             break
         all_rows.extend(new_rows)
@@ -872,15 +948,18 @@ def _fetch_tga_report_rows(
                 records_fetched=len(all_rows),
                 message=f"TGA_DAEN parsed {len(all_rows)} summary report rows on page {page_index}",
             )
+        more_pages_reported = current_status is not None and current_status[0] < current_status[1]
+        can_advance = _has_tga_paging_control(current_html, "PageNext")
         if max_records and len(all_rows) >= max_records:
-            if len(all_rows) > max_records or _has_tga_paging_control(current_html, "PageNext"):
+            if len(all_rows) > max_records or more_pages_reported or (current_status is None and can_advance):
                 warnings.append(f"Stopped at max_records={max_records}; TGA coverage incomplete")
             all_rows = all_rows[:max_records]
             break
-        current_status = _extract_tga_page_status(current_html)
         if current_status and current_status[0] >= current_status[1]:
             break
-        if not _has_tga_paging_control(current_html, "PageNext"):
+        if not can_advance:
+            if more_pages_reported:
+                warnings.append("TGA reported more pages without an available next-page control; coverage incomplete")
             break
         if page_index >= max_pages:
             warnings.append(f"Stopped at max_pages={max_pages}; TGA coverage incomplete")
@@ -939,27 +1018,17 @@ def _extract_tga_page_status(html: str) -> tuple[int, int] | None:
 
 
 def _find_submit_button(html: str, button_name: str) -> tuple[str | None, str | None]:
-    for match in re.finditer(r"<input\b[^>]*>", html, flags=re.I | re.S):
-        tag = match.group(0)
-        attrs = {name.lower(): unescape(value) for name, _, value in re.findall(r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(['\"])(.*?)\2", tag, flags=re.I | re.S)}
-        name = attrs.get("name", "")
-        element_id = attrs.get("id", "")
-        if button_name.lower() in name.lower() or button_name.lower() in element_id.lower():
-            if attrs.get("type", "").lower() in {"submit", "button"}:
-                return name or element_id or None, attrs.get("value", "")
+    control = button_name.lower()
+    for button in BeautifulSoup(html, "html.parser").find_all("input", type=re.compile(r"^(submit|button)$", re.I)):
+        name = button.get("name", "")
+        element_id = button.get("id", "")
+        if not button.has_attr("disabled") and (control in name.lower() or control in element_id.lower()):
+            return name or element_id or None, button.get("value", "")
     return None, None
 
 
 def _has_tga_paging_control(html: str, control_name: str) -> bool:
-    control = control_name.lower()
-    for match in re.finditer(r"<input\b[^>]*>", html, flags=re.I | re.S):
-        tag = match.group(0)
-        attrs = {name.lower(): unescape(value) for name, _, value in re.findall(r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(['\"])(.*?)\2", tag, flags=re.I | re.S)}
-        name = attrs.get("name", "").lower()
-        element_id = attrs.get("id", "").lower()
-        if control in name or control in element_id:
-            return True
-    return False
+    return _find_submit_button(html, control_name)[0] is not None
 
 
 def fetch_tga_reports_for_devices(
@@ -1241,38 +1310,32 @@ def _parse_daen_markdown_rows(text: str) -> list[dict[str, Any]]:
 def _parse_daen_report_blocks(text: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     block: dict[str, str] = {}
-    field_map = {
-        "report": "report_number",
-        "report #": "report_number",
-        "report#": "report_number",
-        "date": "report_date",
-        "trade name": "trade_name",
-        "model/ref": "model_ref",
-        "model / ref": "model_ref",
-        "event description": "event_description",
-        "outcome": "outcome",
-    }
-
-    for raw_line in [line.strip() for line in text.splitlines() if line.strip()]:
-        lowered = raw_line.lower()
-        matched = False
-        for prefix, field in field_map.items():
-            if lowered.startswith(prefix):
-                value = raw_line.split(":", 1)[1].strip() if ":" in raw_line else raw_line[len(prefix):].strip()
-                if field == "report_number" and value.startswith("#"):
-                    value = value.lstrip("#").strip()
-                block[field] = value
-                matched = True
-                break
-        if matched:
+    pending_field = ""
+    for raw_line in text.splitlines():
+        line = _collapse_ws(raw_line)
+        if not line or re.fullmatch(r"[ivx]{1,4}", line, re.I):
             continue
-        if block and raw_line and not raw_line.lower().startswith(("report", "date", "trade name", "model/ref", "outcome")):
-            block["event_description"] = (block.get("event_description", "") + " " + raw_line).strip()
-        if "report_number" in block and "outcome" in block and "event_description" in block and "trade_name" in block and "model_ref" in block and "report_date" in block:
-            records.append(_normalize_report_row(block))
-            block = {}
+        if re.match(r"Report generated\b|Database of Adverse Event Notifications\b|Page \d+ of \d+\b|The TGA uses\b", line, re.I):
+            pending_field = ""
+            continue
+        match = _REPORT_FIELD_LINE.fullmatch(line)
+        if match:
+            field = _REPORT_FIELD_NAMES[match["name"].lower()]
+            value = match["value"].lstrip("#").strip() if field == "report_number" else match["value"].strip()
+            if field == "report_number":
+                if value and not re.fullmatch(r"\d+|[A-Z][A-Z0-9]*-\d+", value, re.I):
+                    continue
+                if all(block.get(required) for required in ("report_number", "report_date", "trade_name")):
+                    records.append(_normalize_report_row(block))
+                block = {field: value}
+            elif block:
+                block[field] = value
+            pending_field = field if block else ""
+        elif pending_field and block:
+            if not block[pending_field] or pending_field in {"trade_name", "event_description"}:
+                block[pending_field] = (block[pending_field] + " " + line).strip()
 
-    if block and {"report_number", "report_date", "trade_name", "model_ref", "event_description", "outcome"}.issubset(block):
+    if all(block.get(required) for required in ("report_number", "report_date", "trade_name")):
         records.append(_normalize_report_row(block))
     return records
 
@@ -1287,8 +1350,9 @@ def _normalize_report_row(raw_report: dict[str, Any]) -> dict[str, Any]:
     trade_name = _first_value(normalized_keys, ["trade_name", "product_name", "product", "device", "name"])
     model_ref = _first_value(normalized_keys, ["model_ref", "model/ref", "model", "device_model"])
     event_description = _first_value(normalized_keys, ["event_description", "event description", "description", "summary", "narrative_text"])
-    outcome = _first_value(normalized_keys, ["outcome", "event_type", "patient_outcome"])
+    outcome = _first_value(normalized_keys, ["outcome", "patient_outcome"])
     return {
+        **normalized_keys,
         "report_number": report_number,
         "report_date": report_date,
         "date_received": _first_value(normalized_keys, ["date_received", "received_date"]),
@@ -1336,29 +1400,19 @@ def _html_cell_text(cell_html: str) -> str:
     return unescape(_strip_tags(cell_html)).strip()
 
 
-def _extract_first_href(cell_html: str, base_url: str = "") -> str:
-    match = re.search(r"<a\b[^>]+href=[\"']([^\"']+)[\"']", cell_html, flags=re.I | re.S)
-    if not match:
-        return ""
-    href = unescape(match.group(1)).strip()
-    if not href or href.lower().startswith("javascript:"):
-        return href
-    return requests.compat.urljoin(base_url, href)
-
-
 def _find_link_by_text(
     html: str,
     base_url: str,
     needles: list[str],
     prefer_javascript: bool = False,
 ) -> str | None:
-    for href, text in re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, flags=re.I | re.S):
-        normalized = _collapse_ws(_strip_tags(text)).lower()
+    for link in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        normalized = _collapse_ws(link.get_text(" ", strip=True)).lower()
         if any(needle in normalized for needle in needles):
-            href = unescape(href)
-            if prefer_javascript and href.lower().startswith("javascript:"):
-                return href
-            if not prefer_javascript and href.lower().startswith("javascript:"):
+            href = link["href"].strip()
+            if href.lower().startswith("javascript:"):
+                if prefer_javascript and _parse_do_postback(href)[0]:
+                    return href
                 continue
             return requests.compat.urljoin(base_url, href)
     return None
@@ -1369,6 +1423,9 @@ def _normalize_header(value: str) -> str:
 
 
 def _normalize_tga_report_header(value: str) -> str:
+    field = _REPORT_FIELD_LINE.fullmatch(_collapse_ws(value))
+    if field and not field["value"]:
+        return _REPORT_FIELD_NAMES[field["name"].lower()]
     header = _normalize_header(value)
     aliases = {
         "report": "report_number",
@@ -1380,7 +1437,7 @@ def _normalize_tga_report_header(value: str) -> str:
 
 
 def _find_report_generation_date(text: str) -> str | None:
-    match = re.search(r"Report Generation Date[:\s]*([0-9]{2}/[0-9]{2}/[0-9]{4})", text, re.I)
+    match = re.search(r"Report (?:Generation Date|generated)[:\s]*(\d{1,2}/\d{1,2}/\d{4})", text, re.I)
     return _to_iso_date(match.group(1)) if match else None
 
 

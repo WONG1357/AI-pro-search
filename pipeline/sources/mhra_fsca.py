@@ -146,13 +146,13 @@ def parse_mhra_notice_page(html: str, page_url: str, keyword: str = "") -> list[
     """Parse one weekly MHRA FSN page into individual manufacturer/device records."""
     soup = BeautifulSoup(html, "html.parser")
     title = (soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else "").strip()
-    issued_text = ""
-    for dt in soup.find_all(["dt", "span"]):
-        if "Issued" in dt.get_text(" ", strip=True):
-            dd = dt.find_next(["dd", "span"])
-            issued_text = dd.get_text(" ", strip=True) if dd else ""
-            break
-    issued_date = format_fda_date(issued_text)
+    weekly_issued_date = ""
+    for label in soup.find_all(["dt", "span"]):
+        if label.get_text(" ", strip=True).rstrip(":").casefold() == "issued":
+            value = label.find_next_sibling(["dd", "span"])
+            if value and parse_year_from_date(value.get_text(" ", strip=True)):
+                weekly_issued_date = format_fda_date(value.get_text(" ", strip=True))
+                break
     content = soup.select_one(".gem-c-govspeak") or soup.select_one("#contents") or soup
     records: list[dict[str, Any]] = []
     headings = content.find_all(["h2", "h3"])
@@ -165,20 +165,25 @@ def parse_mhra_notice_page(html: str, page_url: str, keyword: str = "") -> list[
         node = heading.find_next_sibling()
         while node and getattr(node, "name", None) not in {"h2", "h3"}:
             if hasattr(node, "get_text"):
-                block_text_parts.append(node.get_text(" ", strip=True))
+                part = node.get_text(" ", strip=True)
+                if part:
+                    block_text_parts.append(part)
                 for link in node.find_all("a", href=True):
                     links.append({"text": link.get_text(" ", strip=True), "url": urljoin(page_url, link["href"])})
             node = node.find_next_sibling()
-        block_text = " ".join(part for part in block_text_parts if part)
+        block_text = " ".join(block_text_parts)
         if keyword and keyword.lower() not in f"{heading_text} {block_text}".lower():
             continue
+        notice_date = _extract_notice_date(block_text_parts[0]) if block_text_parts else ""
         records.append(
             {
                 "weekly_title": title,
                 "weekly_url": page_url,
                 "heading": heading_text,
                 "body": block_text,
-                "issued_date": issued_date or _extract_notice_date(block_text),
+                "notice_date": notice_date,
+                "weekly_issued_date": weekly_issued_date,
+                "issued_date": notice_date or weekly_issued_date,
                 "links": links,
             }
         )
@@ -254,8 +259,9 @@ def fetch_mhra_fsca_direct(
                     warnings.append(f"MHRA detail fetch failed: {type(exc).__name__}: {exc}")
                     continue
                 for raw in raw_records:
-                    if not raw.get("issued_date"):
-                        raw["issued_date"] = result_page.get("issued_date", "")
+                    if not raw["weekly_issued_date"]:
+                        raw["weekly_issued_date"] = format_fda_date(result_page.get("issued_date"))
+                        raw["issued_date"] = raw["notice_date"] or raw["weekly_issued_date"]
                     record = normalize_mhra_fsca_record(raw)
                     record["source_query_match"] = True
                     if years and record.get("year") not in years:
@@ -294,6 +300,10 @@ def fetch_mhra_fsca_direct(
     if capped:
         warnings.append(f"MHRA retrieval capped: max_pages={page_limit}, max_records={max_records}")
     warnings.append("MHRA retrieval covers indexed notice headings and excerpts; full attachment content and exhaustive coverage are unverified")
+    warnings.append(
+        "MHRA filters by individual notice date when supplied, otherwise by weekly publication date. "
+        "Partial dates qualify only when the whole known period is inside the requested range."
+    )
     coverage = "failed" if failures and not normalized else "partial" if failures or capped else "unverified"
     return with_coverage(df, coverage, warnings), warnings
 
@@ -302,7 +312,20 @@ def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize one MHRA field safety notice item."""
     heading = raw.get("heading", "")
     manufacturer, product = _split_heading(heading)
-    issued_date = format_fda_date(raw.get("issued_date"))
+    notice_date = format_fda_date(raw.get("notice_date"))
+    weekly_date = format_fda_date(raw.get("weekly_issued_date"))
+    # Older callers supplied a single issued date with no distinction between levels.
+    legacy_date = format_fda_date(raw.get("issued_date")) if "notice_date" not in raw else ""
+    issued_date = notice_date or weekly_date or legacy_date
+    report_date = weekly_date or legacy_date
+    if notice_date:
+        date_basis = "manufacturer_notice_date"
+    elif weekly_date:
+        date_basis = "weekly_publication_date"
+    elif legacy_date:
+        date_basis = "source_issued_date"
+    else:
+        date_basis = "unknown"
     links = raw.get("links") if isinstance(raw.get("links"), list) else []
     fsn_link = _preferred_fsn_link(links) or raw.get("weekly_url", "")
     event_id = _stable_id(raw.get("weekly_url", ""), heading, fsn_link)
@@ -310,7 +333,9 @@ def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
     source_specific = {
         "weekly_title": raw.get("weekly_title"),
         "weekly_url": raw.get("weekly_url"),
-        "date_basis": "notice_issued_date",
+        "date_basis": date_basis,
+        "notice_date": notice_date,
+        "weekly_issued_date": weekly_date,
         "heading": heading,
         "links": links,
     }
@@ -320,11 +345,12 @@ def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
         "event_id": event_id,
         "report_number": event_id,
         "date_of_event": "",
-        "date_received": issued_date,
-        "report_date": issued_date,
+        "date_received": report_date,
+        "report_date": report_date,
         "event_date": issued_date,
+        "search_date_basis": date_basis,
         "year": parse_year_from_date(issued_date),
-        "received_year": parse_year_from_date(issued_date),
+        "received_year": parse_year_from_date(report_date),
         "country": COUNTRY,
         "manufacturer": manufacturer,
         "product_name": product or heading,
@@ -375,16 +401,15 @@ def _extract_model(text: str) -> str:
 
 
 def _extract_notice_date(text: str) -> str:
-    """Extract source-provided full or partial FSN date text from a notice block."""
-    patterns = [
-        r"\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b",
-        r"\b[A-Za-z]+\s+\d{4}\b",
-        r"\b\d{4}-\d{2}-\d{2}\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return format_fda_date(match.group(0))
+    """Read the leading FSN date while excluding model numbers and prose dates."""
+    match = re.fullmatch(
+        r"^(?:(?:issued|date|FSN date)\s*:\s*)?"
+        r"(\d{4}(?:-\d{2}){0,2}|\d{1,2}/\d{1,2}/\d{4}|(?:\d{1,2}\s+)?[A-Za-z]+\s+\d{4})"
+        r"(?:\s+FSN-[A-Z0-9][A-Z0-9./-]*)?",
+        text.strip(), re.I,
+    )
+    if match and parse_year_from_date(match[1]) is not None:
+        return format_fda_date(match[1])
     return ""
 
 

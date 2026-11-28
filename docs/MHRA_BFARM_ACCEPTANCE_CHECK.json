@@ -1,0 +1,78 @@
+{
+  "checked_on_hong_kong_date": "2026-11-28",
+  "scope": "Official page and document spot checks with a local connector regression. OpenAI-hosted retrieval was not exercised.",
+  "mhra": {
+    "coverage": "unverified",
+    "weekly_page": "https://www.gov.uk/drug-device-alerts/field-safety-notices-fsns-from-1-to-5-january-2024",
+    "weekly_publication_date": "2024-01-09",
+    "official_page_examples": [
+      {
+        "device": "LINK: Endo-Model System",
+        "mhra_reference": "27771147",
+        "manufacturer_notice_date": "2023-11-20"
+      },
+      {
+        "device": "Tornier, SAS / Stryker: PYROCARDAN TMC RESURFACING IMPLANT",
+        "mhra_reference": "35544319",
+        "manufacturer_notice_date": "January 2024",
+        "date_precision": "month"
+      }
+    ],
+    "notice_with_reference_on_date_line": {
+      "weekly_page": "https://www.gov.uk/drug-device-alerts/field-safety-notices-26-february-to-1-march-2024",
+      "device": "Beckman Coulter: DxA Automation System / DxA Aliquoter",
+      "manufacturer_notice_date": "2024-02-23",
+      "manufacturer_notice_reference": "FSN-24006"
+    },
+    "local_regression": "The connector prefers the individual notice date, retains the weekly publication date separately, and uses the weekly publication date as an explicit fallback. The shared filter requires a requested date range to cover the entire known month or year for a partial date. The regression uses reconstructed HTML with official date examples and mocked HTTP responses.",
+    "limits": "The public weekly page was read via ChatGPT web retrieval. The bounded finder request was unavailable from that surface and the local shell could not resolve www.gov.uk. The check does not establish finder or attachment exhaustiveness."
+  },
+  "bfarm": {
+    "catalogue": {
+      "url": "https://www.bfarm.de/SiteGlobals/Forms/Suche/EN/Expertensuche_Formular.html",
+      "http_status": 403,
+      "surface": "ChatGPT web retrieval",
+      "hosted_status": "unverified"
+    },
+    "manufacturer_actions_landing": {
+      "url": "https://www.bfarm.de/DE/Medizinprodukte/Aufgaben/Risikobewertung-und-Forschung/Massnahmen-von-Herstellern/_node.html",
+      "http_status": 403,
+      "surface": "ChatGPT web retrieval"
+    },
+    "rss_candidate": {
+      "url": "https://www.bfarm.de/SiteGlobals/Functions/RSSFeed/DE/Medizinprodukte/Kundeninfo/RSSNewsfeed.xml?nn=597716",
+      "status": "body unavailable via ChatGPT web retrieval; feed contents, reachability from the hosted runtime, and historic coverage are unverified"
+    },
+    "individual_official_document": {
+      "url": "https://www.bfarm.de/SharedDocs/Kundeninfos/EN/11/2025/03774-25_kundeninfo_en.pdf?__blob=publicationFile",
+      "device": "Link Spacer Knee RD58",
+      "manufacturer_notice_date": "2025-01-30",
+      "manufacturer_notice_reference": "FSN-20250130",
+      "observation": "Readable text from the regulator-hosted notice was available via ChatGPT web retrieval. Raw-byte download and pypdf extraction for this notice were not exercised.",
+      "coverage": "unverified",
+      "adds_structured_incident_records": false
+    },
+    "bounded_trocar_document_discovery": {
+      "url": "https://www.bfarm.de/SharedDocs/Kundeninfos/DE/06/2024/13610-24_kundeninfo_de.pdf?__blob=publicationFile",
+      "device": "Alcon ophthalmic knives and trocar entry systems",
+      "manufacturer_notice_date": "2024-07-23",
+      "manufacturer_action_reference": "2024.007",
+      "query_relevance": "The notice concerns ophthalmic trocars. It supports a broad trocar search with appropriate device-type context and does not support a claim about laparoscopic trocar models.",
+      "observation": "Readable text from the regulator-hosted notice was available via ChatGPT web retrieval. Catalogue publication date, raw-byte download and pypdf extraction were not verified for this notice.",
+      "coverage": "unverified",
+      "adds_structured_incident_records": false
+    },
+    "image_only_pdf": {
+      "url": "https://www.bfarm.de/SharedDocs/Kundeninfos/DE/06/2025/57622-25_kundeninfo_de.pdf?__blob=publicationFile",
+      "current_web_retrieval_http_status": 403,
+      "previous_successful_byte_check": "SUPPLEMENT_CHECK.json",
+      "previous_pdf_observation": "Eight image-only pages with no extractable characters. Original PDF was unencrypted and SHA-256 was recorded.",
+      "current_toolkit_behavior": "Reports that manual review or OCR is required. No narrative or quotations are generated from the scan."
+    }
+  },
+  "hosted_ocr": {
+    "official_runtime_documentation": "https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted",
+    "documented_configuration": "The Agents API permits configuring system packages and setup commands for an OpenAI-hosted Linux sandbox.",
+    "status": "Neither an OCR engine nor its language data was verified in this project's hosted environment. The pinned toolkit has no OCR dependency so scanned PDFs still require manual review or OCR outside the current extraction path."
+  }
+}

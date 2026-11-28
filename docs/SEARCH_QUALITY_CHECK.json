@@ -1,0 +1,468 @@
+{
+  "reference_version": 1,
+  "official_sources_checked_on": "2026-11-28",
+  "official_records": {
+    "19632393": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=19632393&pc=GCJ",
+    "20239840": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20239840&pc=GCJ",
+    "20273790": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20273790&pc=GCJ",
+    "20185941": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20185941&pc=GCJ",
+    "20348571": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20348571&pc=GCJ",
+    "20206828": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20206828&pc=GCJ",
+    "23900707": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=23900707&pc=GCJ",
+    "24093782": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=24093782&pc=GCJ",
+    "30931286": "https://www.gov.uk/drug-device-alerts/field-safety-notices-24-to-28-june-2024",
+    "30458851": "https://www.gov.uk/drug-device-alerts/field-safety-notices-24-to-28-june-2024",
+    "29529909": "https://www.gov.uk/drug-device-alerts/field-safety-notices-29-april-to-3-may-2024",
+    "30156053": "https://www.gov.uk/drug-device-alerts/field-safety-notices-29-april-to-3-may-2024"
+  },
+  "replay": {
+    "official_keyword_replay": {
+      "summary": {
+        "case_count": 12,
+        "passed_case_count": 12,
+        "true_positives": 17,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "true_negatives": 63,
+        "precision": 1.0,
+        "recall": 1.0,
+        "duplicate_row_count": 0,
+        "field_difference_count": 0
+      },
+      "cases": [
+        {
+          "case": "trocar-2024",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "trocar"
+          ],
+          "start": "2024-01-01",
+          "end": "2024-12-31",
+          "expected": [
+            "19632393",
+            "20185941",
+            "20206828",
+            "20239840",
+            "20273790",
+            "20348571"
+          ],
+          "observed": [
+            "19632393",
+            "20185941",
+            "20206828",
+            "20239840",
+            "20273790",
+            "20348571"
+          ],
+          "true_positives": [
+            "19632393",
+            "20185941",
+            "20206828",
+            "20239840",
+            "20273790",
+            "20348571"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 2,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "fda-receipt-day",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "Versaport"
+          ],
+          "start": "2024-06-28",
+          "end": "2024-06-28",
+          "expected": [
+            "19632393"
+          ],
+          "observed": [
+            "19632393"
+          ],
+          "true_positives": [
+            "19632393"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 7,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "event-day-is-not-receipt-day",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "Versaport"
+          ],
+          "start": "2024-05-01",
+          "end": "2024-05-01",
+          "expected": [],
+          "observed": [],
+          "true_positives": [],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 8,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "model-retains-separate-same-lot-reports",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "CTF73"
+          ],
+          "start": "2024-09-01",
+          "end": "2024-09-30",
+          "expected": [
+            "20185941",
+            "20273790"
+          ],
+          "observed": [
+            "20185941",
+            "20273790"
+          ],
+          "true_positives": [
+            "20185941",
+            "20273790"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 6,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "no-fabricated-occurrence-date",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "CTR01"
+          ],
+          "start": "2024-10-01",
+          "end": "2024-10-01",
+          "expected": [
+            "20348571"
+          ],
+          "observed": [
+            "20348571"
+          ],
+          "true_positives": [
+            "20348571"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 7,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "different-manufacturer-and-model",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "KII BALLOON BLUNT TIP SYSTEM"
+          ],
+          "start": "2024-01-01",
+          "end": "2024-12-31",
+          "expected": [
+            "20206828"
+          ],
+          "observed": [
+            "20206828"
+          ],
+          "true_positives": [
+            "20206828"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 7,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "concomitant-product-keyword-search",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "VersaOne"
+          ],
+          "start": "2024-01-01",
+          "end": "2025-12-31",
+          "expected": [
+            "20239840",
+            "23900707"
+          ],
+          "observed": [
+            "20239840",
+            "23900707"
+          ],
+          "true_positives": [
+            "20239840",
+            "23900707"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 6,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "year-boundary-receipt",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "VersaOne"
+          ],
+          "start": "2026-01-01",
+          "end": "2026-02-01",
+          "expected": [
+            "24093782"
+          ],
+          "observed": [
+            "24093782"
+          ],
+          "true_positives": [
+            "24093782"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 7,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "mhra-notice-day",
+          "source": "MHRA_FSCA",
+          "keywords": [
+            "Spaceplus Infusomat"
+          ],
+          "start": "2024-06-24",
+          "end": "2024-06-24",
+          "expected": [
+            "30931286"
+          ],
+          "observed": [
+            "30931286"
+          ],
+          "true_positives": [
+            "30931286"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 3,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "mhra-partial-date-within-month",
+          "source": "MHRA_FSCA",
+          "keywords": [
+            "FiberOptix Ultra"
+          ],
+          "start": "2024-04-01",
+          "end": "2024-04-30",
+          "expected": [
+            "29529909"
+          ],
+          "observed": [
+            "29529909"
+          ],
+          "true_positives": [
+            "29529909"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 3,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "mhra-partial-date-not-a-day",
+          "source": "MHRA_FSCA",
+          "keywords": [
+            "FiberOptix Ultra"
+          ],
+          "start": "2024-04-15",
+          "end": "2024-04-15",
+          "expected": [],
+          "observed": [],
+          "true_positives": [],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 4,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "mhra-product-family-decoys",
+          "source": "MHRA_FSCA",
+          "keywords": [
+            "ventilator"
+          ],
+          "start": "2024-01-01",
+          "end": "2024-12-31",
+          "expected": [
+            "30458851"
+          ],
+          "observed": [
+            "30458851"
+          ],
+          "true_positives": [
+            "30458851"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 3,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        }
+      ]
+    },
+    "exact_reported_device_diagnostic": {
+      "summary": {
+        "case_count": 1,
+        "passed_case_count": 0,
+        "true_positives": 1,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "true_negatives": 6,
+        "precision": 0.5,
+        "recall": 1.0,
+        "duplicate_row_count": 0,
+        "field_difference_count": 0
+      },
+      "cases": [
+        {
+          "case": "primary-device-only",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "VersaOne"
+          ],
+          "start": "2024-01-01",
+          "end": "2025-12-31",
+          "expected": [
+            "23900707"
+          ],
+          "observed": [
+            "20239840",
+            "23900707"
+          ],
+          "true_positives": [
+            "23900707"
+          ],
+          "false_positives": [
+            "20239840"
+          ],
+          "false_negatives": [],
+          "true_negative_count": 6,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": false
+        }
+      ]
+    },
+    "modeled_edge_replay": {
+      "summary": {
+        "case_count": 3,
+        "passed_case_count": 3,
+        "true_positives": 4,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "true_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "duplicate_row_count": 0,
+        "field_difference_count": 0
+      },
+      "cases": [
+        {
+          "case": "overlapping-query-hits",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "Versaport",
+            "trocar"
+          ],
+          "start": "2024-06-28",
+          "end": "2024-06-28",
+          "expected": [
+            "19632393"
+          ],
+          "observed": [
+            "19632393"
+          ],
+          "true_positives": [
+            "19632393"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 0,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "missing-identifiers-content-fallback",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "CTF73"
+          ],
+          "start": "2024-09-01",
+          "end": "2024-09-30",
+          "expected": [
+            "no-id-1",
+            "no-id-2"
+          ],
+          "observed": [
+            "no-id-1",
+            "no-id-2"
+          ],
+          "true_positives": [
+            "no-id-1",
+            "no-id-2"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 0,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        },
+        {
+          "case": "negated-malfunction-is-not-confirmed-break",
+          "source": "FDA_MAUDE",
+          "keywords": [
+            "CTF73"
+          ],
+          "start": "2024-09-01",
+          "end": "2024-09-30",
+          "expected": [
+            "negated"
+          ],
+          "observed": [
+            "negated"
+          ],
+          "true_positives": [
+            "negated"
+          ],
+          "false_positives": [],
+          "false_negatives": [],
+          "true_negative_count": 0,
+          "duplicate_rows": 0,
+          "field_differences": [],
+          "passed": true
+        }
+      ]
+    }
+  }
+}

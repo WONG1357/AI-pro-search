@@ -245,7 +245,7 @@ def test_tga_zero_requires_source_empty_state_and_requested_query_echo(monkeypat
     monkeypatch.setattr(tga, "submit_tga_daen_search", lambda *a, **kw: response(html, content_type="text/html"))
     monkeypatch.setattr(tga, "fetch_tga_print_report", lambda *a, **kw: (html.encode(), "text/html", "https://example.test/report"))
     if not verified:
-        with pytest.raises(RuntimeError, match="not a verified empty result"):
+        with pytest.raises(RuntimeError, match="not a verified empty result|query echo mismatch"):
             tga.fetch_tga_daen_direct(["Versaport"], [2024], start_date="2024-01-01", end_date="2024-12-31")
         return
     result = tga.fetch_tga_daen_direct(["Versaport"], [2024], start_date="2024-01-01", end_date="2024-12-31")
@@ -261,6 +261,124 @@ def test_tga_script_or_template_zero_is_not_result_evidence():
     parsed = tga.parse_tga_search_result_counts(f'<html><script>var message="{placeholder}";</script><template>{placeholder}</template><p>Loading...</p></html>')
     assert parsed["expected_report_count"] is None
     assert parsed["zero_reports_confirmed"] is False
+
+
+def test_tga_positive_pdf_preserves_official_report_fields(monkeypatch):
+    # Field layout from TGA FOI 26-2331, Document 35. Narrative text is synthetic.
+    parsed_text = (
+        "You searched for the following 1 medical device between 01/12/2020 – 31/12/2020:\n"
+        "Number of reports: 1\n"
+        "Report numberi 67102\nReport date ii 14/12/2020\n"
+        "Trade nameiii Softmed Level 3 Surgical Face Mask\n"
+        "Manufacturer v SOFTMED MANUFACTURING PTY LTD\nARTG number vi 339475\n"
+        "GMDN Term vii Mask, surgical, single use\nModel number xi 780511\n"
+        "Event descriptionxiii The mask straps stretched\nwhen the wearer adjusted them.\n"
+        "Reported event outcomexiv Injury\nEvent type xvi Material Integrity Problem\n"
+        "Report generated 19/11/2025 3:59:29 PM Page 2 of 2"
+    )
+    monkeypatch.setattr(tga, "extract_text_from_tga_pdf", lambda *a, **kw: parsed_text)
+    print_response = response("", content_type="application/pdf")
+    print_response._content = b"%PDF-print"
+    session = Session([
+        response("<html>entry</html>", content_type="text/html"),
+        response({"d": None}),
+        response({"d": [{"HashKey": "0#1", "DisplayName": "Softmed"}]}),
+        response(
+            '<input type="hidden" name="__VIEWSTATE" value="query">'
+            '<a href="javascript:window.print()">Print</a>'
+            '<a href="javascript:__doPostBack(\'PrintReport\',\'\')">Print version</a>',
+            content_type="text/html",
+        ),
+        print_response,
+    ])
+
+    result = tga.fetch_tga_daen_direct(["339475"], start_date="2020-12-01", end_date="2020-12-31", session=session)
+    records = result["records"]
+    assert records.attrs["completeness"] == "complete"
+    assert records.attrs["total_available"] == 1
+    assert result["metadata"]["report_generation_date"] == "2025-11-19"
+    assert session.calls[-2][1]["data"]["m"] == ["0#1"]
+    assert session.calls[-2][1]["data"]["startDate"] == "2020-12-01"
+    assert session.calls[-2][1]["data"]["endDate"] == "2020-12-31"
+    assert session.calls[-1][1]["data"]["__EVENTTARGET"] == "PrintReport"
+    record = records.iloc[0]
+    assert record["event_id"] == "67102"
+    assert record["report_date"] == "2020-12-14"
+    assert record["date_of_event"] == ""
+    assert record["product_code"] == "339475"
+    assert record["manufacturer"] == "SOFTMED MANUFACTURING PTY LTD"
+    assert record["device_model"] == "780511"
+    assert record["event_type"] == "Material Integrity Problem"
+    assert record["patient_outcome"] == "Injury"
+    assert record["narrative_text"] == "The mask straps stretched when the wearer adjusted them."
+
+
+def test_tga_positive_html_detail_table_accepts_footnotes_and_optional_outcome():
+    html = """<table>
+    <tr><th>Report number<sup>i</sup></th><td>64852</td></tr>
+    <tr><th>Report date<sup>ii</sup></th><td>7/08/2020</td></tr>
+    <tr><th>Trade name<sup>iii</sup></th><td>Softmed Level 3 Surgical Mask</td></tr>
+    <tr><th>ARTG number<sup>vi</sup></th><td>339475</td></tr>
+    <tr><th>Event description<sup>xiii</sup></th><td>Mask fit was reported as poor.</td></tr>
+    <tr><th>Reported event outcome<sup>xiv</sup></th><td></td></tr>
+    <tr><th>Event type<sup>xvi</sup></th><td>Protective Measures Problem</td></tr>
+    </table>"""
+    (record,) = tga.parse_tga_print_report_html(html)
+    assert record["report_number"] == "64852"
+    assert record["report_date"] == "2020-08-07"
+    assert record["artg_number"] == "339475"
+    assert record["event_type"] == "Protective Measures Problem"
+    assert record["outcome"] == ""
+
+
+@pytest.mark.parametrize("max_pages,echoed_end,expected_ids,coverage", [
+    (2, "31/12/2020", ["64744", "67102"], "complete"),
+    (1, "31/12/2020", ["64744"], "partial"),
+    (2, "30/12/2020", ["64744"], "partial"),
+])
+def test_tga_positive_html_pagination_retains_scope(max_pages, echoed_end, expected_ids, coverage):
+    def result_page(page, report_id, report_date, period_end):
+        return response(f"""
+            <p>1 medical device selected between 01/01/2020 - {period_end}</p>
+            <div id="report-totals">Number of reports: 2</div>
+            <table><tr><th>Report #</th><th>Report date</th><th>Trade name</th>
+                <th>ARTG number</th><th>GMDN term</th></tr>
+                <tr><td>{report_id}</td><td>{report_date}</td><td>Softmed</td>
+                <td>339475</td><td>Surgical mask</td></tr></table>
+            <span>Page {page} of 2</span>
+            <input type="hidden" name="__VIEWSTATE" value="page-{page}">
+            <input type="submit" name="report$PageNext" value="Next" {"disabled" if page == 2 else ""}>
+            """, content_type="text/html")
+
+    session = Session([
+        response("<html>entry</html>", content_type="text/html"),
+        response({"d": None}),
+        response({"d": [{"HashKey": "0#1", "DisplayName": "Softmed"}]}),
+        response(
+            '<input type="hidden" name="__VIEWSTATE" value="summary">'
+            '<a href="javascript:__doPostBack(\'ReportList\',\'\')">List of reports</a>'
+            '<a href="/print-summary">Print version</a>',
+            content_type="text/html",
+        ),
+        result_page(1, "64744", "7/08/2020", "31/12/2020"),
+        result_page(2, "67102", "14/12/2020", echoed_end),
+    ])
+
+    result = tga.fetch_tga_daen_direct(
+        ["339475"], start_date="2020-01-01", end_date="2020-12-31", session=session,
+        max_pages=max_pages, max_reports=2,
+    )
+    records = result["records"]
+    assert list(records["event_id"]) == expected_ids
+    assert records.attrs["completeness"] == coverage
+    assert records.attrs["total_available"] == 2
+    assert session.calls[4][1]["data"]["__EVENTTARGET"] == "ReportList"
+    assert len(session.calls) == (6 if max_pages == 2 else 5)
+    if max_pages == 2:
+        assert session.calls[5][1]["data"]["__VIEWSTATE"] == "page-1"
+        assert session.calls[5][1]["data"]["report$PageNext"] == "Next"
+    assert list(records["narrative_text"]) == [""] * len(expected_ids)
+    assert list(records["generic_name"]) == ["Surgical mask"] * len(expected_ids)
 
 
 def test_tga_keeps_rows_after_pagination_failure(monkeypatch):

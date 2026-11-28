@@ -1,0 +1,53 @@
+{
+  "checked_at": "2026-11-28",
+  "official_positive_reference": {
+    "source": "TGA FOI 26-2331, Document 35, DAEN medical-devices List of reports",
+    "url": "https://www.tga.gov.au/sites/default/files/2026-01/FOI%2026-2331.pdf",
+    "print_generated_date": "2025-11-19",
+    "selected_device_count": 6,
+    "start_date": "2020-01-01",
+    "end_date": "2022-12-31",
+    "report_count": 15,
+    "print_page_count": 18,
+    "known_report": {
+      "print_page": 6,
+      "report_number": "67102",
+      "report_date": "2020-12-14",
+      "artg_number": "339475",
+      "manufacturer": "SOFTMED MANUFACTURING PTY LTD",
+      "device_model": "780511",
+      "artg_url": "https://www.tga.gov.au/resources/artg/339475"
+    }
+  },
+  "offline_verification": {
+    "status": "passed",
+    "scope": "Simulated portal transport and parser fixtures based on the official report's field layout. The PDF test supplies representative extracted text and the HTML fixtures reconstruct the tables. They do not replay downloaded original report bytes or a current portal session.",
+    "checked": [
+      "Quoted ASP.NET postbacks with query and pagination form state",
+      "Selected-device count and exact report-date scope in HTML and print output",
+      "Official print labels and footnotes, multiline narrative, ARTG identity, and separate event type and patient outcome",
+      "Summary rows retain device identity without inventing incident narrative",
+      "Complete two-page result, explicit page cap, and rejection of a page with a changed report interval"
+    ],
+    "tga_tests_passed": 42
+  },
+  "current_portal_verification": {
+    "status": "pending",
+    "portal_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-entry.aspx",
+    "observed_blockers": [
+      "The workspace could not resolve the regulator host for a direct HTTPS request.",
+      "The ChatGPT in-app browser was unavailable in this session."
+    ],
+    "bounded_probe": {
+      "keywords": ["339475"],
+      "sources": ["TGA_DAEN"],
+      "start_date": "2020-12-01",
+      "end_date": "2020-12-31",
+      "max_pages": 20,
+      "max_records": 25,
+      "request_timeout": 15,
+      "source_timeout": 90
+    },
+    "comparison": "Reconcile today's autocomplete choices, echoed dates and report count against actual List of reports pages and print output. Look for report 67102 and resolve any difference against current official records. The 15-report historical total is for a different device selection and date range and cannot be used as the expected total of this probe."
+  }
+}

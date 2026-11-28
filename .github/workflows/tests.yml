@@ -24,3 +24,34 @@ jobs:
             requirements-agent.txt
       - run: python -m pip install -r requirements.txt -r requirements-agent.txt
       - run: python -m pytest -q
+      - name: Probe the official TGA positive reference
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[tga-live]')
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+
+          from cloud_agent.collector import collect
+          from cloud_agent.evidence import write_report
+          from cloud_agent.integrity import verify_report
+          from cloud_agent.schema import SearchRequest
+
+          check = json.loads(Path('docs/TGA_POSITIVE_ACCEPTANCE_CHECK.json').read_text())
+          request = SearchRequest.from_dict(check['current_portal_verification']['bounded_probe'])
+          reference = check['official_positive_reference']['known_report']
+          with tempfile.TemporaryDirectory() as output:
+              folder = write_report(request, collect(request), Path(output))
+              verify_report(folder, require_assessment=False)
+              overview = json.loads((folder / 'overview.json').read_text())
+              evidence = json.loads((folder / 'evidence.json').read_text())
+              matches = [row for row in evidence if row['native_id'] == reference['report_number']]
+              result = overview['source_status'][0]
+              known_positive = any(row['search_date'] == reference['report_date']
+                                   and row['search_date_basis'] == 'report_date' for row in matches)
+              print(json.dumps({'coverage': result, 'warnings': overview['source_warnings'],
+                                'errors': overview['source_errors'], 'known_positive': known_positive}))
+              if not known_positive:
+                  raise SystemExit('The current portal response did not verify the historical reference.')
+          PY

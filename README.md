@@ -4,7 +4,7 @@ An agent for **medical-device adverse-event reports, recalls, and field safety n
 
 The replacement combines an OpenAI-hosted agent with a deterministic, audited Python retrieval toolkit. It accepts a natural-language request, plans device-specific searches, checks source coverage, examines original evidence, and produces CSV, Excel, JSON, and cited Markdown reports.
 
-**Activation status:** implementation and regression tests are available. A new API key, project/model access, and a successful live OpenAI-hosted acceptance run are still required before claiming that the agent is operational. Live regulator checks and the unresolved BfArM access restriction are documented below.
+**Activation is pending.** The controller and retrieval toolkit are available for testing. The [acceptance record](docs/AUDIT_AND_ACCEPTANCE.md) documents the source checks and the pending live OpenAI-hosted run.
 
 ## What runs where
 
@@ -53,7 +53,7 @@ Example request:
 
 > Find trocar adverse-event reports and field safety notices from 1 January to 31 December 2024 across all six regulators. Include the exact device terms used, a source-by-source coverage table, original evidence links, category summaries, and CSV/Excel exports. Distinguish reports from safety notices and explain any gaps.
 
-The workflow starts exactly one task. If the observer times out, recover that session using its saved state rather than launching a duplicate.
+The workflow starts one task on its first attempt. If observation times out, use the saved recovery state to reconnect to the same session. A workflow rerun uses the retained initial recovery artifact and fails safely if that state is unavailable.
 
 ## Controller commands
 
@@ -71,9 +71,9 @@ The controller expects `OPENAI_API_KEY` in its environment. It does not read or 
 
 - `start` without `--detach` observes the initial turn.
 - `resume` reconnects to the same task and never resends its input.
-- `download` selects artifacts from the exact completed root turn, checks their sizes, and verifies the surveillance report manifests.
+- `download` selects artifacts from the exact completed root turn, checks their sizes and inventory, and verifies each surveillance report and assessment. Inspect its source coverage even when the command succeeds.
 - `cancel` requests cancellation, then checks the remote state.
-- `cleanup` deletes a terminal session only after artifacts have been downloaded.
+- `cleanup` requires verification of the retained report files before deleting a completed session. Keep the download on persistent storage and run cleanup from a controller that can still access it. Workflow recovery artifacts record session and turn IDs. If you recover from GitHub Actions, download and verify the files again before cleanup.
 
 ```bash
 python -m cloud_agent cancel --state .agent-state/run.json
@@ -81,6 +81,8 @@ python -m cloud_agent cleanup --state .agent-state/run.json
 ```
 
 A failed HTTP request or a disconnected stream is not proof that the remote task stopped. The saved state records the distinction.
+
+The bounded public FDA task in [`examples/hosted-acceptance.txt`](examples/hosted-acceptance.txt) checks remote execution before cutover. Use a new state path for its first submission and reuse that path for status, resume, and download. The task deliberately caps retrieval at one page and two records, so a usable result should still disclose partial coverage. Save the verified download and controller state privately.
 
 ## Deterministic toolkit
 
@@ -128,11 +130,11 @@ Counts describe retrieved reports/notices. They are not unique patient counts, i
 | Source | Preserved capability | Coverage limit / latest check |
 | --- | --- | --- |
 | FDA MAUDE | Official openFDA retrieval, identity/narrative search, normalization and record links | Endpoint and a small full toolkit run succeeded; requested caps correctly returned partial coverage |
-| TGA DAEN | Device selection, report/print retrieval, HTML/PDF parsing | A broad query exceeded a deliberately short 35-second budget. A narrower Versaport/2024 query completed within the default budget and returned a source-confirmed zero. Positive-report retrieval still needs live acceptance. Report dates and the verified portal publication cutoff are explicit |
+| TGA DAEN | Device selection, report/print retrieval, HTML/PDF parsing | An official historical printout supplied positive reports and exposed parser gaps. Local regressions cover those formats and pagination. A current positive portal run remains pending. The earlier Versaport/2024 query returned a source-confirmed zero |
 | Health Canada MDI | Public DataTables retrieval, paging, native fields | Endpoint and bounded worker run succeeded; limited pages can contain records outside the requested period |
 | Swissmedic | Official publication search and notice links | Bounded full toolkit run returned two records and correctly marked the cap as partial; OpenAI-hosted acceptance remains separate |
-| MHRA | Official alert/weekly-notice parsing | Bounded full toolkit run returned one notice; HTML listing scope remains unverified rather than exhaustive |
-| BfArM | Official search/notice retrieval and separate document fallback | Catalogue returned HTTP 403. A discovered official PDF downloaded, but its eight scanned pages require OCR or visual review. Extractable official documents can be preserved separately; catalogue completeness remains unverified |
+| MHRA | Official alert/weekly-notice parsing | The date filter uses the manufacturer notice date when the listing supplies it and records the weekly publication date separately. HTML listing coverage remains unverified |
+| BfArM | Official search/notice retrieval and separate document fallback | The catalogue returned HTTP 403 during development and public web checks. Individual official notices were readable as supplemental evidence. The scanned PDF checked earlier requires OCR or visual review. A check from the OpenAI-hosted target remains pending |
 
 Endpoint probes do not establish end-to-end connector correctness. Successful fixtures do not establish current source availability.
 
@@ -148,7 +150,11 @@ The supplementary fetcher currently supports text extraction from HTML and text-
 - [Bounded full six-source integration check](docs/SIX_SOURCE_INTEGRATION_CHECK.json)
 - [Default-budget TGA integration check](docs/TGA_INTEGRATION_CHECK.json)
 - [Follow-up TGA zero-result confirmation](docs/TGA_ZERO_CONFIRMATION.json)
+- [TGA positive-report and pagination evidence](docs/TGA_POSITIVE_ACCEPTANCE_CHECK.json)
 - [Official-document fallback check](docs/SUPPLEMENT_CHECK.json)
+- [MHRA notice-date and BfArM coverage checks](docs/MHRA_BFARM_ACCEPTANCE_CHECK.json)
+- [Official-record search quality benchmark](docs/SEARCH_QUALITY_BENCHMARK.md)
+- [Hosted acceptance continuation evidence](docs/HOSTED_ACCEPTANCE_CONTINUATION.json)
 - [Final regression result](docs/REGRESSION_CHECK.json)
 - [Verified hosted API contract](docs/HOSTED_API_CONTRACT.md)
 
@@ -178,4 +184,4 @@ It now displays source coverage and provides Excel, JSONL, and manifest download
 
 This is incident surveillance. It is not a general regulation-version corpus, QMS amendment system, or a clinically validated risk assessment. The agent has no company database credentials or document-write integration.
 
-The cloud agent has not yet been run with the newly requested key. Before operational use, verify project access, provisioning, one actual hosted command, a complete report/assessment, source coverage, reconnecting, and downloading the matching artifacts. BfArM catalogue access and TGA positive-report retrieval remain explicit acceptance items.
+Operational use is pending verification of project access, hosted execution, report and assessment integrity, recovery, and durable artifact retention. The [acceptance record](docs/AUDIT_AND_ACCEPTANCE.md) tracks the remaining source checks and cutover criteria.

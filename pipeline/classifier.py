@@ -34,7 +34,7 @@ CATEGORY_RULES: list[dict[str, object]] = [
             r"\blost\b.{0,40}\bseal\b",
         ],
         "medium": [
-            r"\bseal\b.{0,80}\b(leak|leaks|leaked|leakage)\b",
+            r"\bseal\b.{0,80}\b(leak|leaks|leaked|leaking|leakage)\b",
             r"\b(trocar|port)\b.{0,80}\bseal\b.{0,80}\bproblem\b",
         ],
     },
@@ -97,10 +97,10 @@ CATEGORY_RULES: list[dict[str, object]] = [
     {
         "category": "Trocar Leakage",
         "high": [
-            r"\btrocar\b.{0,100}\b(leak|leaks|leaked|leakage|gas leak|co2 leak|insufflation leak|loss of pneumoperitoneum)\b",
-            r"\bport\b.{0,100}\b(leak|leaks|leaked|leakage|gas leak|co2 leak|insufflation leak)\b",
-            r"\binsufflation\b.{0,100}\b(leak|leaks|leaked|leakage|loss)\b",
-            r"\bco2\b.{0,100}\b(leak|leaks|leaked|leakage|loss)\b",
+            r"\btrocar\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|gas leak|co2 leak|insufflation leak|loss of pneumoperitoneum)\b",
+            r"\bport\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|gas leak|co2 leak|insufflation leak)\b",
+            r"\binsufflation\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|loss)\b",
+            r"\bco2\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|loss)\b",
             r"\bloss of pneumoperitoneum\b",
         ],
         "medium": [
@@ -307,7 +307,8 @@ def _affirmed_text(text: str) -> str:
     prefix = re.compile(
         rf"\b(?:no|without|denies|denied|not|never)\b"
         rf"(?:\s+(?:evidence|signs?|indication|reports?|reported|of|any|a|the|patient|device|product|"
-        rf"was|were|is|be|been|had|has|have|observed|detected|found|experience|experienced|sustain|sustained|associated|significant|serious)){{0,10}}"
+        rf"was|were|is|be|been|had|has|have|observed|detected|found|experience|experienced|sustain|sustained|"
+        rf"associated|significant|serious|trocar|cannula|obturator|seal|valve|balloon|sleeve|shaft|tip|port)){{0,10}}"
         rf"\s+\b{_FINDING}\b"
     )
     postfix = re.compile(
@@ -357,7 +358,7 @@ def _display_term(term: str) -> str:
 def _infer_accident_group(text: str) -> str | None:
     groups = [
         ("crack/break issue", r"\b(broke|broken|break|crack|cracked|fracture|fractured|split|snapped)\w*\b"),
-        ("leakage issue", r"\b(leak|leaks|leaked|leakage|gas leak|fluid leak)\b"),
+        ("leakage issue", r"\b(leak|leaks|leaked|leaking|leakage|gas leak|fluid leak)\b"),
         ("separation/detachment issue", r"\b(separat|detach|detached|dislodged|fell off|came off)\w*\b"),
         ("inflation/deflation issue", r"\b(inflat|deflat|rupture|ruptured|burst)\w*\b"),
         ("removal/deployment difficulty", r"\b(stuck|jammed|difficult|difficulty|unable|could not|would not)\b.{0,80}\b(remove|withdraw|deploy|release|insert)\w*\b"),

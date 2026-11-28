@@ -20,13 +20,13 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   launch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TASK_TEXT: ${{ inputs.task }}
       AGENT_MODEL: ${{ inputs.model }}
     steps:
@@ -38,19 +38,31 @@ jobs:
           cache-dependency-path: requirements-agent.txt
       - name: Install controller
         run: python -m pip install -r requirements-agent.txt
+      - name: Recover the initial state on a workflow rerun
+        if: github.run_attempt != '1'
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-agent-initial-recovery-${{ github.run_id }}
+          path: .agent-state
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
       - name: Prepare task without shell interpolation
+        if: github.run_attempt == '1'
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
-          if not os.environ.get('OPENAI_API_KEY'):
-              raise SystemExit('OPENAI_API_KEY is not configured in repository secrets.')
           Path(os.environ['RUNNER_TEMP'], 'task.txt').write_text(os.environ['TASK_TEXT'], encoding='utf-8')
           PY
       - name: Launch one OpenAI-hosted task
-        run: python -m cloud_agent start --task-file "$RUNNER_TEMP/task.txt" --model "$AGENT_MODEL" --state .agent-state/run.json --detach
+        if: github.run_attempt == '1'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          test -n "$OPENAI_API_KEY" || { echo 'Configure the controller OPENAI_API_KEY secret.'; exit 1; }
+          python -m cloud_agent start --task-file "$RUNNER_TEMP/task.txt" --model "$AGENT_MODEL" --state .agent-state/run.json --detach
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && github.run_attempt == '1'
         with:
           name: cloud-agent-initial-recovery-${{ github.run_id }}
           path: .agent-state/run.json
@@ -58,6 +70,8 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
       - name: Observe existing task to completion
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python - <<'PY'
           import time
@@ -71,18 +85,28 @@ jobs:
               if status == 'completed':
                   print('OpenAI turn completed. Files remain in its cloud session; inspect the source coverage before treating the search as successful.')
                   break
-              if status in {'failed', 'cancelled', 'requires_action', 'ambiguous_submission'}:
+              if status in {'failed', 'cancelled', 'environment_failed', 'requires_action', 'ambiguous_submission'}:
                   raise SystemExit('Cloud task requires attention: ' + str(status))
               time.sleep(10)
           else:
               raise SystemExit('Observation timed out. The existing cloud task may still run; recover using the saved state, do not resubmit.')
           PY
       - name: Download and verify the actual report files
-        run: python -m cloud_agent download --state .agent-state/run.json --output agent-results
+        id: validated
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          status=0
+          python -m cloud_agent download --state .agent-state/run.json --output agent-results || status=$?
+          # Exit 2 denotes an integrity-verified diagnostic with all sources failed.
+          if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
+            echo 'verified=true' >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
       - uses: actions/upload-artifact@v4
-        if: always() && inputs.export_reports
+        if: always() && inputs.export_reports && steps.validated.outputs.verified == 'true'
         with:
-          name: surveillance-reports-${{ github.run_id }}
+          name: surveillance-reports-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: agent-results/
           retention-days: 30
           if-no-files-found: warn
@@ -95,15 +119,16 @@ jobs:
           path = Path('.agent-state/run.json')
           if path.exists():
               data = json.loads(path.read_text())
-              data['output_text'] = ''
-              data.pop('artifacts', None)
-              data.pop('artifacts_downloaded_at', None)
-              path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+              fields = ('schema_version', 'run_id', 'session_id', 'turn_id', 'environment_id',
+                        'model', 'bundle_sha256', 'task_sha256', 'created_at', 'updated_at',
+                        'status', 'observer_status', 'submission_attempted')
+              recovery = {name: data[name] for name in fields if name in data}
+              path.write_text(json.dumps(recovery, indent=2), encoding='utf-8')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cloud-agent-recovery-${{ github.run_id }}
+          name: cloud-agent-recovery-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: .agent-state/run.json
           include-hidden-files: true
           retention-days: 30

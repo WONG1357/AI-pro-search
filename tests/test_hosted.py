@@ -312,6 +312,39 @@ def test_cleanup_requires_downloaded_artifacts_and_never_silently_cancels(tmp_pa
     assert result["status"] == "deleted"
 
 
+def test_cleanup_refuses_to_delete_after_a_retained_download_changes(tmp_path):
+    client, path, _ = started(tmp_path)
+    sessions = client.beta.agents.sessions
+    sessions.artifacts.list.return_value = [artifact()]
+    sessions.artifacts.with_streaming_response.content.return_value = Download(b"verified\n")
+    [downloaded] = collect_artifacts(path, tmp_path / "reports", client=client)
+    downloaded.write_bytes(b"changed\n")
+    with pytest.raises(RuntimeError, match="Retained artifact"):
+        delete_session(path, client=client)
+    sessions.delete.assert_not_called()
+
+
+def test_acceptance_trace_rejects_an_additional_search_outside_the_expected_cwd():
+    from scripts.verify_hosted_acceptance import AcceptanceError, check_trace
+
+    task = (Path(__file__).resolve().parents[1] / "examples" / "hosted-acceptance.txt").read_text()
+    folder = "run-example"
+    digest = "0" * 64
+    pins = set(DEFAULT_PACKAGES)
+    outputs = [f"{digest}  /workspace/ai_pro_search.zip", "\n".join(sorted(pins))]
+    commands = [line.replace("RUN_DIR", f"/workspace/outputs/{folder}")
+                for line in task.splitlines() if line.startswith(("sha256sum ", "python "))]
+    trace = [NS(turn_id="turn_1", type="command_execution", cwd="/workspace/app", command=command,
+                status="completed", exit_code=0, output=outputs[i] if i < len(outputs) else "")
+             for i, command in enumerate(commands)]
+    check_trace(trace, task, "turn_1", folder, digest, pins)
+
+    extra = NS(turn_id="turn_1", type="command_execution", cwd="/workspace",
+               command="cd /workspace/app && python -m cloud_agent search --request /workspace/other.json")
+    with pytest.raises(AcceptanceError, match="unexpected retrieval"):
+        check_trace([*trace, extra], task, "turn_1", folder, digest, pins)
+
+
 def test_report_recovery_excludes_other_turns_and_commentary(tmp_path):
     client, path, _ = started(tmp_path)
     client.beta.agents.sessions.turns.items.list.return_value = [

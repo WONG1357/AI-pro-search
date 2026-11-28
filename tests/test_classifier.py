@@ -11,6 +11,12 @@ def test_classifies_trocar_leakage() -> None:
     assert classify_incident(text) == "Trocar Leakage"
 
 
+def test_classifies_leaking_trocar_without_requiring_a_second_leak_term() -> None:
+    # This wording appears in FDA MAUDE record 21172482.
+    assert classify_incident("It appears that one trocar is leaking") == "Trocar Leakage"
+    assert classify_incident("The trocar was not leaking.") != "Trocar Leakage"
+
+
 def test_classifies_other_when_no_pattern_matches() -> None:
     assert classify_incident("Routine use with no reported product malfunction.") == "Unrelated / insufficient detail"
 
@@ -25,6 +31,11 @@ def test_negation_prevents_false_leakage_match() -> None:
     result = classify_incident_details(text)
     assert result.category != "Trocar Leakage"
     assert result.confidence == "Low"
+
+
+def test_negation_can_name_the_component_and_preserve_a_separate_failure() -> None:
+    assert classify_incident("No cannula shaft fracture was observed. The trocar performed as expected.") == "Other"
+    assert classify_incident("No cannula fracture was observed, but the trocar leaked.") == "Trocar Leakage"
 
 
 def test_packaging_issue_is_separate_from_device_breakage() -> None:

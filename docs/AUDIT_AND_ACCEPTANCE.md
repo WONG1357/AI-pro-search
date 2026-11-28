@@ -1,6 +1,6 @@
 # Audit, replacement design, and acceptance record
 
-Reviewed on **21 November 2026 (Hong Kong)**. Repository: [WONG1357/AI-pro-search](https://github.com/WONG1357/AI-pro-search). Audited baseline: `d67c548ae5aa7ebe9d0b233204c277dbf62cf413`.
+Originally reviewed **21 November 2026**, with acceptance checks updated **28 November 2026** (Hong Kong time). The original audited baseline in [WONG1357/AI-pro-search](https://github.com/WONG1357/AI-pro-search) was `d67c548ae5aa7ebe9d0b233204c277dbf62cf413`.
 
 ## Outcome and operational status
 
@@ -8,7 +8,7 @@ The replacement is implemented as an OpenAI-hosted medical-device surveillance a
 
 The audit documents **55 finding rows: 21 core findings and 34 source findings**. Each row links the original code path, consequence, and correction; related findings sometimes share a common root cause. The fixes are implemented in the replacement toolkit and the existing dashboard. This is a bounded code audit and regression program, not a guarantee that all possible defects or future website changes have been eliminated.
 
-**Cloud activation is pending.** No live OpenAI Agents API request has been made with the newly requested key. A dedicated key, the correct project/model access, secure controller configuration, and one real hosted acceptance run are required before calling the agent operational. The code and offline SDK contract checks do not establish that those credentials or entitlements exist.
+**Cloud activation is pending.** The 28 November continuation found no configured key and skipped the credential-dependent work at the user's instruction. Dedicated key metadata, project and model access, a live OpenAI-hosted session, and recovery and retention of its outputs remain unverified. [Draft PR #1](https://github.com/WONG1357/AI-pro-search/pull/1) remains the cutover branch.
 
 ## What the audit found
 
@@ -57,13 +57,23 @@ All network checks below ran from the development environment, not an OpenAI-hos
 
 The original TGA integration metadata preserves a contradictory empty-page warning discovered during review. The parser now distinguishes an explicitly verified zero-result page from an unexplained empty parse; the follow-up source regression covers that correction. The earlier metadata is retained as an honest record rather than silently rewritten to look like a later test.
 
+### 28 November continuation
+
+| Check | Result |
+| --- | --- |
+| MHRA dates | Official weekly notices contained individual manufacturer dates in an earlier year and month-only dates. The adapter retains their precision and separates them from weekly publication dates. [Source checks](MHRA_BFARM_ACCEPTANCE_CHECK.json) |
+| BfArM access and scanned PDFs | Public web checks returned HTTP 403 for the catalogue. Individual official supplementary notices were readable, including one for ophthalmic trocar systems. The target hosted environment still needs an access check. Scanned supplements require manual visual review until OCR is verified there. [Source checks](MHRA_BFARM_ACCEPTANCE_CHECK.json) |
+| TGA positive reference | A historical official printout covered six device selections and 15 reports. Positive-format and pagination regressions exercise the parser fixes. The current portal submission and production pagination require a live check. [Source checks](TGA_POSITIVE_ACCEPTANCE_CHECK.json) |
+| Hosted report and lifecycle contracts | A controlled FDA replay exported two records with partial coverage. The simulated controller reconnected to the original root turn, verified the assessment and exports, and rechecked retained bytes before cleanup. The direct local FDA attempt produced a verified connection-failure report. Real hosted execution and retention remain pending. [Acceptance evidence](HOSTED_ACCEPTANCE_CONTINUATION.json) |
+| Search quality | The reference set includes eight official FDA reports and four MHRA notices. All 12 keyword replay queries and three modeled edge cases passed. The separate exact-device diagnostic surfaced one concomitant-device mention as a broad keyword hit. Live retrieval precision and recall remain unmeasured. [Benchmark](SEARCH_QUALITY_BENCHMARK.md) |
+
 ## Remaining acceptance gates
 
-1. **Credential and project:** complete secure creation of the dedicated API key in the intended project. Use a non-expiring setting only if permitted by project policy. Verify Agents read/write, Responses write, model access, and billing. A key's expiry policy does not make a sandbox permanent.
-2. **Real hosted execution:** submit one bounded request, confirm that the OpenAI-hosted workspace is provisioned, and observe the actual toolkit command and report creation. A successful turn without a verified report and assessment is insufficient.
-3. **Recovery and artifacts:** disconnect/reconnect to the same session, download artifacts for the saved root turn, verify all manifests and assessments, and retain the results before deleting a session.
-4. **Source gaps:** confirm actual network behavior from the hosted environment. BfArM catalogue access is still externally blocked in development. TGA's positive-report flow and production-sized pagination need live acceptance. MHRA and BfArM HTML listing coverage remains unverified rather than exhaustive.
-5. **Search quality:** review representative device/product-code searches against a labeled reference set before claiming a quantified recall or precision target. Counts are reports/notices, may overlap across regulators, and are not unique patients, incidence, or comparative safety rankings.
+1. **Credential and project.** Confirm the dedicated key's project and expiry metadata through the secure setup flow. Configure the controller secret and verify Agents read/write, Responses write, model access, and billing.
+2. **Real hosted execution.** Submit the [bounded public FDA task](../examples/hosted-acceptance.txt) once, confirm `openai_hosted` provisioning, and inspect evidence of the toolkit command, official retrieval, partial coverage, and the report and assessment.
+3. **Recovery and artifacts.** Reconnect to the same session, download the saved root turn's artifacts, verify the files against their manifests and assessment, and retain the files before cleanup. Record acceptance separately from local and fixture evidence.
+4. **Source access.** Check BfArM from the target hosted environment. If access remains blocked, preserve that coverage gap. Verify a current positive portal search and pagination for TGA. MHRA and BfArM HTML listing coverage remains unverified.
+5. **Cutover.** Verify the updated PR's CI, hosted acceptance, and deployment configuration before making the replacement the default. Continue to disclose incomplete source coverage in each report.
 
 These gates are explicit operational limits, not unimplemented fixes hidden behind passing unit tests. The implemented collector reports caps, failures, publication-lag truncation, and unverified coverage. It can preserve separately discovered official documents without adding them to structured incident counts or declaring a failed catalogue complete.
 

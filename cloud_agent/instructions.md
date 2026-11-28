@@ -68,6 +68,10 @@ python -m cloud_agent search --request /workspace/search-request.json --output /
    Read the returned run directory's `overview.json`, `report.md`, and
    `evidence_index.json`. For each factual claim, inspect the corresponding complete
    entry in `evidence.json`. Never substitute a truncated preview for full evidence.
+   For requests about a specific brand, model, or manufacturer, verify which device
+   the report or notice identifies. Distinguish confirmed device matches from
+   narrative-only mentions, including devices reported as used alongside it.
+   Preserve the toolkit's counts and disclose the scope of any device-specific claims.
 5. Check every selected source's status. `failed`, `partial`, and `unverified` must
    remain visible. An empty result after a timeout, schema change, page cap, or
    source failure does not establish absence of matching events. TGA's reporting

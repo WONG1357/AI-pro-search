@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     search.add_argument("--output", type=Path, default=Path("/workspace/outputs"))
     verify = sub.add_parser("verify")
     verify.add_argument("--run-dir", type=Path, required=True)
+    verify.add_argument("--require-assessment", action="store_true", help="Also verify the cited assessment and reconcile the report tables")
     finalize = sub.add_parser("finalize")
     finalize.add_argument("--run-dir", type=Path, required=True)
     finalize.add_argument("--assessment", type=Path, required=True)
@@ -67,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "verify":
             from cloud_agent.integrity import verify_report
-            print(json.dumps(verify_report(args.run_dir), indent=2))
+            print(json.dumps(verify_report(args.run_dir, require_assessment=args.require_assessment), indent=2))
             return 0
         if args.command == "finalize":
             from cloud_agent.evidence import add_assessment

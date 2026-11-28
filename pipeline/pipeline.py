@@ -327,7 +327,11 @@ def clean_records(df: pd.DataFrame) -> pd.DataFrame:
     source = cleaned.get("source", pd.Series("", index=cleaned.index)).fillna("").astype(str)
     report_date_sources = source.isin(["FDA_MAUDE", "TGA_DAEN"])
     cleaned["search_date"] = cleaned["event_date"].where(~report_date_sources, cleaned["report_date"])
-    cleaned["search_date_basis"] = "event_date"
+    input_basis = cleaned.get("search_date_basis", pd.Series("", index=cleaned.index))
+    mhra_dates = source.eq("MHRA_FSCA") & input_basis.isin(
+        ["manufacturer_notice_date", "weekly_publication_date", "source_issued_date"]
+    )
+    cleaned["search_date_basis"] = input_basis.where(mhra_dates, "event_date")
     cleaned.loc[report_date_sources, "search_date_basis"] = "report_date"
     missing_search_date = cleaned["search_date"].fillna("").astype(str).str.strip() == ""
     cleaned.loc[missing_search_date, "search_date"] = cleaned.loc[missing_search_date, "report_date"]

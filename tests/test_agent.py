@@ -1,8 +1,10 @@
 """Regression checks for the replacement agent's data boundaries and outputs."""
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -208,6 +210,88 @@ def test_cloud_download_gate_requires_actual_assessment(tmp_path):
         verify_downloads(list(folder.rglob("*")))
     add_assessment(folder, {"claims": [], "limitations": ["Fixture run only."], "next_steps": []})
     assert verify_downloads([p for p in folder.rglob("*") if p.is_file()])[0]["evidence_records"] == 1
+
+
+def test_an_old_local_file_cannot_fill_a_gap_in_the_exact_turn_download(tmp_path):
+    folder = make_report(tmp_path)
+    add_assessment(folder, {"limitations": ["Fixture run only."]})
+    files = [p for p in folder.rglob("*") if p.is_file() and p.name != "assessment.md"]
+    with pytest.raises(ValueError, match="exact-turn download"):
+        verify_downloads(files)
+
+
+def test_rehashing_a_coverage_csv_cannot_hide_inconsistent_counts(tmp_path):
+    folder = make_report(tmp_path)
+    add_assessment(folder, {"limitations": ["Fixture run only."]})
+    coverage_csv = next(folder.rglob("source_status.csv"))
+    contents = pd.read_csv(coverage_csv)
+    contents.loc[0, "exported_count"] = 7
+    contents.to_csv(coverage_csv, index=False, encoding="utf-8-sig")
+    digest = hashlib.sha256(coverage_csv.read_bytes()).hexdigest()
+
+    nested_path = coverage_csv.parent / "manifest.json"
+    nested = json.loads(nested_path.read_text())
+    nested["files"]["source_status"]["sha256"] = digest
+    nested_path.write_text(json.dumps(nested))
+    outer_path = folder / "manifest.json"
+    outer = json.loads(outer_path.read_text())
+    for changed in (coverage_csv, nested_path):
+        outer["files"][changed.relative_to(folder).as_posix()] = {
+            "sha256": hashlib.sha256(changed.read_bytes()).hexdigest(), "bytes": changed.stat().st_size,
+        }
+    outer_path.write_text(json.dumps(outer))
+
+    with pytest.raises(ValueError, match="CSV rows differ"):
+        verify_report(folder, require_assessment=True)
+
+
+def test_capped_public_acceptance_report_with_an_official_record_replay(tmp_path, monkeypatch):
+    from cloud_agent.worker import run_source
+    from pipeline import sources_openfda
+    from scripts.verify_hosted_acceptance import check_public_report
+
+    # Selected fields were transcribed from the FDA's public detail pages.
+    # The adapter payload and total below are a controlled replay, not a live
+    # openFDA page or an assertion about which reports it currently returns.
+    brand = "ENDOPATH XCEL BLADELESS TROCAR"
+    records = [
+        {"mdr_report_key": "20155780", "report_number": "3005075853-2024-06605",
+         "date_received": "20240906", "date_of_event": "20240810", "event_type": "Malfunction",
+         "device": [{"brand_name": brand, "model_number": "B5LT"}],
+         "mdr_text": [{"text": "failure of leakage of co2"}]},
+        {"mdr_report_key": "20200955", "report_number": "3005075853-2024-06829",
+         "date_received": "20240912", "date_of_event": "20240820", "event_type": "Malfunction",
+         "device": [{"brand_name": brand, "model_number": "B12LT"}],
+         "mdr_text": [{"text": "the device was broken"}]},
+    ]
+    calls = []
+
+    def fetch_page(client, method, url, **kwargs):
+        calls.append((method, url, kwargs["params"]))
+        return SimpleNamespace(status_code=200, json=lambda: {"meta": {"results": {"total": 3}}, "results": records})
+
+    monkeypatch.setattr(sources_openfda, "OPENFDA_API_KEY", "")
+    monkeypatch.setattr(sources_openfda, "request_with_retry", fetch_page)
+    task = (Path(__file__).resolve().parents[1] / "examples" / "hosted-acceptance.txt").read_text()
+    task_request = json.loads(next(line for line in task.splitlines() if line.startswith('{"keywords"')))
+    query = SearchRequest.from_dict(task_request)
+    folder = write_report(query, collect(query, fetcher=run_source), tmp_path)
+    evidence = json.loads((folder / "evidence.json").read_text())
+    assert len(calls) == 1
+    assert calls[0] == ("GET", "https://api.fda.gov/device/event.json", {
+        "search": 'device.brand_name:"trocar" AND date_received:[20240101 TO 20241231]', "limit": 2, "skip": 0,
+    })
+    assert [(row["native_id"], row["search_date"]) for row in evidence] == [
+        ("20155780", "2024-09-06"), ("20200955", "2024-09-12"),
+    ]
+    assert all(f"mdrfoi__id={row['native_id']}" in row["direct_record_url"] for row in evidence)
+    add_assessment(folder, {
+        "claims": [{"statement": "The B5LT report describes CO2 leakage.",
+                    "support": [{"evidence_id": evidence[0]["evidence_id"], "quote": "leakage of co2"}]}],
+        "limitations": ["Controlled replay of selected fields from two public FDA records; the retrieval cap leaves coverage partial."],
+    })
+    assert verify_report(folder, require_assessment=True)["evidence_records"] == 2
+    assert check_public_report(folder, task) == {"retrieved": 2, "returned": 2, "exported": 2}
 
 
 def test_nested_export_manifest_matches_outer_coverage(tmp_path):

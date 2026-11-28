@@ -1,0 +1,16 @@
+Perform exactly one public FDA MAUDE search for trocar. Use only the root agent, the reviewed toolkit in /workspace/app, and these literal request fields. Use no additional searches, supplemental documents, or subagents.
+
+{"keywords":["trocar"],"sources":["FDA_MAUDE"],"start_date":"2024-01-01","end_date":"2024-12-31","classifier_profile":"Trocar","components":[],"accident_terms":[],"max_pages":1,"max_records":2,"request_timeout":10,"source_timeout":60}
+
+Write the request to /workspace/search-request.json. From /workspace/app, run each of the following as a separate shell command. Use the working directory setting or prefix a command with "cd /workspace/app &&". Preserve these command forms so the controller can check the actual execution records.
+
+sha256sum /workspace/ai_pro_search.zip
+python -c "from importlib.metadata import version; from pathlib import Path; print('\n'.join(n+'=='+version(n) for n in (s.split('==')[0] for s in Path('requirements-cloud.txt').read_text().splitlines() if '==' in s)))"
+python -m cloud_agent search --request /workspace/search-request.json --output /workspace/outputs
+
+Read the full evidence used for each factual claim. Write /workspace/assessment.json. Include a supported claim if usable evidence exists. Describe the actual source status, cap, date basis, and limitations. If retrieval fails, preserve and explain the diagnostic report. Run these two separate commands, replacing RUN_DIR with the literal absolute run directory returned by the search.
+
+python -m cloud_agent finalize --run-dir RUN_DIR --assessment /workspace/assessment.json
+python -m cloud_agent verify --run-dir RUN_DIR --require-assessment
+
+In your final response give the actual counts, source coverage, evidence IDs, cap and report directory.

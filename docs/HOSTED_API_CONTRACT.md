@@ -174,14 +174,17 @@ outside the output directory. Local files are grouped under
 
 Downloads go to temporary files, are checked against the API's byte count, and
 receive a local SHA-256 digest. The completed bytes are installed without
-overwriting an existing different file. A run with no published artifacts is
-not accepted as a complete report. The caller must also check the required
-report files and their evidence/coverage contents; “turn completed” alone is not
-a surveillance-quality guarantee.
+overwriting an existing different file. The downloader verifies the exact
+published inventory and checks each report manifest, assessment, source ledger,
+and the counts and identifiers represented in JSONL, CSV, and XLSX. Inspect the
+assessment and source coverage before using the results.
 
 `cancel_task` submits `agent.session.input.cancel`. It does not announce a
 cancelled result until the server confirms that outcome. `delete_session` is
-explicit and, by default, requires downloaded artifacts and a terminal turn.
+explicit and, by default, requires a terminal turn. For a completed turn it
+rechecks the exact recorded inventory, sizes, and hashes of retained files
+before requesting deletion. If a recovery export lacks the local download
+record, download and verify the results on persistent storage first.
 The launcher preserves sessions for follow-up and does not delete them after
 every launch. HTTP 409 cleanup conflicts are surfaced for bounded later retry,
 not handled with a spin loop or a silent cancellation.
@@ -215,8 +218,8 @@ configuration. No fallback execution provider exists.
 
 ## Verification boundary
 
-`python -m pytest tests/test_hosted.py -q` currently passes **29 tests**, including
-real installed-SDK serialization against an in-memory HTTP transport. Tests cover
+`python -m pytest tests/test_hosted.py -q` covers installed-SDK serialization
+against an in-memory HTTP transport. Tests also cover
 code/secret separation, dependency pins, no duplicate creation on HTTP 503,
 reconnection without input resubmission, root/subagent outcome separation,
 failure and cancellation states, exact-turn artifact selection, traversal,
@@ -227,3 +230,19 @@ project/model access, real hosted provisioning, regulator endpoint availability,
 live search quality, billing, or the validity/expiry of a newly created API key.
 Acceptance must include a bounded real hosted run and inspection of its actual
 report and coverage artifacts once the credential is provisioned.
+
+From the reviewed checkout on the private controller, submit the public task
+once and reconnect using its original state file. Run this from the repository
+root so Python resolves the controller modules.
+
+```bash
+python -m cloud_agent start --task-file examples/hosted-acceptance.txt --state .agent-state/acceptance-001.json --detach
+python -m cloud_agent status --state .agent-state/acceptance-001.json
+python -m scripts.verify_hosted_acceptance --state .agent-state/acceptance-001.json --output agent-results
+```
+
+The verifier reconnects, retains the downloaded files, checks the bundle and
+installed pins against the completed root turn's execution trace, and verifies
+the deliberately capped FDA report. Keep the private state and reports until
+the assessment and final response have been reviewed. The verifier prints a
+receipt without session, account, evidence text, or credential details.
