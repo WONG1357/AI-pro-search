@@ -1,0 +1,116 @@
+name: Surveillance regression tests
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-cloud.txt
+            requirements-agent.txt
+      - run: python -m pip install -r requirements.txt -r requirements-agent.txt
+      - run: python -m pytest -q
+      - name: Probe the official TGA positive reference
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[tga-live]')
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+
+          from cloud_agent.collector import collect
+          from cloud_agent.evidence import write_report
+          from cloud_agent.integrity import verify_report
+          from cloud_agent.schema import SearchRequest
+
+          check = json.loads(Path('docs/TGA_POSITIVE_ACCEPTANCE_CHECK.json').read_text())
+          request = SearchRequest.from_dict(check['current_portal_verification']['bounded_probe'])
+          reference = check['official_positive_reference']['known_report']
+          with tempfile.TemporaryDirectory() as output:
+              folder = write_report(request, collect(request), Path(output))
+              verify_report(folder, require_assessment=False)
+              overview = json.loads((folder / 'overview.json').read_text())
+              evidence = json.loads((folder / 'evidence.json').read_text())
+              matches = [row for row in evidence if row['native_id'] == reference['report_number']]
+              result = overview['source_status'][0]
+              known_positive = any(row['search_date'] == reference['report_date']
+                                   and row['search_date_basis'] == 'report_date' for row in matches)
+              print(json.dumps({'coverage': result, 'warnings': overview['source_warnings'],
+                                'errors': overview['source_errors'], 'known_positive': known_positive}))
+              if not known_positive:
+                  raise SystemExit('The current portal response did not verify the historical reference.')
+          PY
+      - name: Probe live TGA report pagination
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[tga-pagination-live]')
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          from pipeline.source_support import SourceRequestError
+          from pipeline.sources.tga_daen import TgaDaenClientConfig, fetch_tga_daen_direct
+
+          check = json.loads(Path('docs/TGA_POSITIVE_ACCEPTANCE_CHECK.json').read_text())
+          query = check['live_pagination_verification']['larger_probe']
+          start, end = query['start_date'], query['end_date']
+          budget = query['budget']
+          print(json.dumps({'source': 'TGA_DAEN', 'artg_search_term': query['artg_search_term'],
+                            'start_date': start, 'end_date': end, 'budget': budget}), flush=True)
+
+          class ReportPages:
+              def __init__(self):
+                  self.parsed_pages = []
+
+              def update_source(self, source, *, message='', **progress):
+                  match = re.fullmatch(r'TGA_DAEN parsed \d+ summary report rows on page (\d+)', message)
+                  if source == 'TGA_DAEN' and match:
+                      self.parsed_pages.append(int(match[1]))
+
+          pages = ReportPages()
+          try:
+              report = fetch_tga_daen_direct(
+                  [query['artg_search_term']], start_date=start, end_date=end,
+                  client_config=TgaDaenClientConfig(page_size=budget['page_size'],
+                                                  timeout=budget['request_timeout_seconds']),
+                  max_pages=budget['max_pages'], max_reports=budget['max_reports'],
+                  progress_reporter=pages,
+              )
+          except Exception as exc:
+              reason = str(exc) if isinstance(exc, SourceRequestError) else type(exc).__name__
+              print(json.dumps({'coverage': 'failed', 'html_report_pages_parsed': pages.parsed_pages,
+                                'error': reason}), flush=True)
+              raise SystemExit(1)
+
+          records, metadata = report['records'], report['metadata']
+          warnings = report['warnings']
+          print(json.dumps({
+              'coverage': records.attrs.get('completeness'),
+              'effective_start': metadata.get('effective_start'), 'effective_end': metadata.get('effective_end'),
+              'expected_report_count': metadata.get('expected_report_count'),
+              'retained_report_count': len(records),
+              'content_type': next((w.partition('=')[2] for w in warnings if w.startswith('content_type=')), None),
+              'html_report_pages_parsed': pages.parsed_pages,
+              'live_pagination_verified': 2 in pages.parsed_pages,
+              'warnings': warnings,
+          }), flush=True)
+          if 2 not in pages.parsed_pages:
+              raise SystemExit('The portal response did not verify a second HTML report page.')
+          PY

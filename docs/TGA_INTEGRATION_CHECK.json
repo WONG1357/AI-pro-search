@@ -1,0 +1,76 @@
+{
+  "checked_at": "2026-11-21T11:44:29.612879+00:00",
+  "scope": "TGA complete connector under default 120s source budget, narrowed device keyword, one-page/two-record cap. Not OpenAI-hosted and not exhaustive.",
+  "request": {
+    "keywords": [
+      "Versaport"
+    ],
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "sources": [
+      "TGA_DAEN"
+    ],
+    "question": "Medical-device incident surveillance",
+    "components": [],
+    "accident_terms": [],
+    "classifier_profile": "Custom",
+    "max_pages": 1,
+    "max_records": 2,
+    "request_timeout": 10,
+    "source_timeout": 120
+  },
+  "source_status": [
+    {
+      "source_name": "TGA_DAEN",
+      "success": true,
+      "completeness": "complete",
+      "retrieved_count": 0,
+      "returned_count": 0,
+      "total_available": 0,
+      "effective_start": "2024-01-01",
+      "effective_end": "2024-12-31",
+      "error_message": "",
+      "elapsed_seconds": 9.975,
+      "exported_count": 0,
+      "requested_start": "2024-01-01",
+      "requested_end": "2024-12-31"
+    }
+  ],
+  "source_errors": [],
+  "source_warnings": [
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "device_search keyword=Versaport matches=5"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "selected_devices_count=5"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "expected_report_count=0"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "print_report_url=https://apps.tga.gov.au/PROD/DEVICES/daen-report.aspx"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "content_type=text/html; charset=utf-8"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "TGA report page had no new report rows; coverage incomplete"
+    },
+    {
+      "source_name": "TGA_DAEN",
+      "warning_message": "TGA DAEN found 5 selected devices but returned 0 reports for date range 2024-01-01 to 2024-12-31"
+    }
+  ],
+  "verification": {
+    "run_id": "20261121T114429Z-8d613e499110",
+    "status": "complete_for_requested_queries",
+    "verified_files": 16,
+    "evidence_records": 0
+  }
+}

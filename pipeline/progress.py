@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 
-TERMINAL_STATUSES = {"completed", "failed", "skipped"}
+TERMINAL_STATUSES = {"completed", "failed", "skipped", "partial", "unverified"}
 
 
 @dataclass
@@ -108,11 +108,12 @@ class ProgressReporter:
         source_name: str,
         records_fetched: int | None = None,
         message: str = "",
+        completeness: str = "complete",
     ) -> None:
         """Mark a source as completed."""
         source = self._source(source_name)
-        source.status = "completed"
-        source.stage = "Completed"
+        source.status = {"complete": "completed", "partial": "partial", "unverified": "unverified"}.get(completeness, "unverified")
+        source.stage = "Finished"
         if records_fetched is not None:
             source.records_fetched = records_fetched
         if source.total_steps is not None:
@@ -120,7 +121,9 @@ class ProgressReporter:
         source.percent_complete = 100.0
         source.eta_seconds = 0.0
         source.updated_at = _now()
-        source.message = message or f"Completed with {source.records_fetched} records"
+        if source.started_at is not None:
+            source.elapsed_seconds = (source.updated_at - source.started_at).total_seconds()
+        source.message = message or f"Finished with {source.records_fetched} records; coverage {completeness}"
         self.log(f"{source_name} {source.message}")
         self._notify()
 
@@ -132,6 +135,8 @@ class ProgressReporter:
         source.percent_complete = 100.0
         source.eta_seconds = 0.0
         source.updated_at = _now()
+        if source.started_at is not None:
+            source.elapsed_seconds = (source.updated_at - source.started_at).total_seconds()
         source.message = error_message
         self.log(f"{source_name} failed: {error_message}")
         self._notify()
@@ -170,12 +175,18 @@ class ProgressReporter:
 
     def to_dict(self) -> dict:
         """Return a JSON-friendly snapshot dictionary."""
-        return asdict(self.get_snapshot())
+        result = asdict(self.get_snapshot())
+        for source in result["sources"].values():
+            for field_name in ("started_at", "updated_at"):
+                if source[field_name] is not None:
+                    source[field_name] = source[field_name].isoformat()
+        return result
 
     def log(self, message: str) -> None:
         """Append a timestamped log message."""
         elapsed = (_now() - self.started_at).total_seconds()
         self.logs.append(f"[{_format_duration(elapsed)}] {message}")
+        self.logs = self.logs[-200:]
         self._notify()
 
     def _source(self, source_name: str) -> SourceProgress:
@@ -222,6 +233,12 @@ class ProgressReporter:
         if any(status == "running" for status in statuses):
             return "running"
         if all(status in TERMINAL_STATUSES for status in statuses):
+            if statuses <= {"failed", "skipped"}:
+                return "failed"
+            if statuses & {"failed", "skipped", "partial"}:
+                return "partial"
+            if "unverified" in statuses:
+                return "unverified"
             return "completed"
         return "pending"
 

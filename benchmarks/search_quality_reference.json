@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "official_sources_checked_on": "2026-11-28",
+  "fda": [
+    {
+      "key": "19632393", "report_number": "19632393",
+      "brand": "VERSAPORT", "model": "UNVCA12STF", "manufacturer": "COVIDIEN LP",
+      "event_date": "2024-05-01", "received_date": "2024-06-28",
+      "text": "During the operation, the team identified a leaking trocar seal and replaced the device."
+    },
+    {
+      "key": "20239840", "report_number": "9612501-2024-02372",
+      "brand": "VERSAPORT", "model": "ONB12SHF", "manufacturer": "DAVIS & GECK CARIBE LTD",
+      "event_date": "2024-08-16", "received_date": "2024-09-17",
+      "text": "The trocars leaked and were replaced after loss of pneumoperitoneum. No patient injury was reported.",
+      "additional_text": "Concomitant product listed: VersaOne trocar, model ONB5SHF."
+    },
+    {
+      "key": "20273790", "report_number": "2027111-2024-00840",
+      "brand": "KII FIOS FIRST ENTRY", "model": "CTF73", "manufacturer": "APPLIED MEDICAL RESOURCES",
+      "event_date": "2024-08-26", "received_date": "2024-09-20",
+      "text": "An adrenalectomy used a trocar whose sleeve broke during removal. The fragment was recovered. No patient injury was reported. The cannula shaft fractured."
+    },
+    {
+      "key": "20185941", "report_number": "2027111-2024-00825",
+      "brand": "KII FIOS FIRST ENTRY", "model": "CTF73", "manufacturer": "APPLIED MEDICAL RESOURCES",
+      "event_date": "2024-08-20", "received_date": "2024-09-10",
+      "text": "During rib thoracoscopy, the trocar shaft broke. A replacement was used. No patient injury was reported."
+    },
+    {
+      "key": "20348571", "report_number": "2027111-2024-00854",
+      "brand": "KII OPTICAL ACCESS SYSTEM", "model": "CTR01", "manufacturer": "APPLIED MEDICAL RESOURCES",
+      "event_date": "", "received_date": "2024-10-01",
+      "text": "The trocar broke and the fragment was retrieved. Another trocar was inserted. The narrative gives May 2024 without a confirmed occurrence day. No patient injury was reported."
+    },
+    {
+      "key": "20206828", "report_number": "2027111-2024-00827",
+      "brand": "KII BALLOON BLUNT TIP SYSTEM", "model": "C0R47", "manufacturer": "APPLIED MEDICAL RESOURCES",
+      "event_date": "2024-07-25", "received_date": "2024-09-12",
+      "text": "Trocars snagged, making it difficult to insert tools and remove optics. A new trocar was used. No patient injury or illness was reported. The manufacturer could not confirm the reported resistance in testing."
+    },
+    {
+      "key": "23900707", "report_number": "1219930-2025-06071",
+      "brand": "VERSAONE", "model": "RSEAL", "manufacturer": "COVIDIEN SURGICAL",
+      "event_date": "2025-12-24", "received_date": "2025-12-26",
+      "text": "The trocar insufflation port broke and pneumoperitoneum leaked after contact with an adjacent port. No patient injury was reported."
+    },
+    {
+      "key": "24093782", "report_number": "9612501-2026-00122",
+      "brand": "VERSAONE", "model": "RNONB8STF", "manufacturer": "DAVIS & GECK CARIBE LTD",
+      "event_date": "2025-12-22", "received_date": "2026-01-16",
+      "text": "The VersaOne trocar was chipped and broken components were retrieved from the patient cavity. No patient injury was reported."
+    }
+  ],
+  "mhra": [
+    {
+      "key": "30931286",
+      "page": "field-safety-notices-24-to-28-june-2024",
+      "page_title": "Field Safety Notices: 24 to 28 June 2024",
+      "title": "B Braun: Spaceplus Infusomat",
+      "details": "A single-channel bedside infusion pump.",
+      "notice_date": "2024-06-24", "weekly_issued_date": "2024-07-09"
+    },
+    {
+      "key": "30458851",
+      "page": "field-safety-notices-24-to-28-june-2024",
+      "page_title": "Field Safety Notices: 24 to 28 June 2024",
+      "title": "Philips: BiPAP A30 Ventilator (Respironics, Inc.) BiPAP A40",
+      "details": "A portable electric ventilator.",
+      "notice_date": "2024-05-21", "weekly_issued_date": "2024-07-09"
+    },
+    {
+      "key": "29529909",
+      "page": "field-safety-notices-29-april-to-3-may-2024",
+      "page_title": "Field Safety Notices: 29 April to 3 May 2024",
+      "title": "Arrow International: FiberOptix Ultra 8 IAB Ultra 8 IAB UltraFlex IAB",
+      "details": "Intra-aortic balloon catheter.",
+      "notice_date": "April 2024", "weekly_issued_date": "2024-05-07"
+    },
+    {
+      "key": "30156053",
+      "page": "field-safety-notices-29-april-to-3-may-2024",
+      "page_title": "Field Safety Notices: 29 April to 3 May 2024",
+      "title": "Medtronic: Minimed Insulin Pump",
+      "details": "Manufacturer corrective action FA1249.",
+      "notice_date": "May 2024", "weekly_issued_date": "2024-05-07"
+    }
+  ],
+  "replay_cases": [
+    {"name": "trocar-2024", "source": "FDA_MAUDE", "keywords": ["trocar"], "start": "2024-01-01", "end": "2024-12-31", "expect": ["19632393", "20239840", "20273790", "20185941", "20348571", "20206828"]},
+    {"name": "fda-receipt-day", "source": "FDA_MAUDE", "keywords": ["Versaport"], "start": "2024-06-28", "end": "2024-06-28", "expect": ["19632393"], "check": {"19632393": {"event_date": "2024-05-01", "search_date": "2024-06-28", "source_type": "adverse_event"}}, "live": true},
+    {"name": "event-day-is-not-receipt-day", "source": "FDA_MAUDE", "keywords": ["Versaport"], "start": "2024-05-01", "end": "2024-05-01", "expect": []},
+    {"name": "model-retains-separate-same-lot-reports", "source": "FDA_MAUDE", "keywords": ["CTF73"], "start": "2024-09-01", "end": "2024-09-30", "expect": ["20185941", "20273790"], "check": {"20273790": {"category": "Broken cannula"}, "20185941": {"category": "Broken cannula"}}},
+    {"name": "no-fabricated-occurrence-date", "source": "FDA_MAUDE", "keywords": ["CTR01"], "start": "2024-10-01", "end": "2024-10-01", "expect": ["20348571"], "check": {"20348571": {"event_date": "", "search_date": "2024-10-01"}}},
+    {"name": "different-manufacturer-and-model", "source": "FDA_MAUDE", "keywords": ["KII BALLOON BLUNT TIP SYSTEM"], "start": "2024-01-01", "end": "2024-12-31", "expect": ["20206828"]},
+    {"name": "concomitant-product-keyword-search", "source": "FDA_MAUDE", "keywords": ["VersaOne"], "start": "2024-01-01", "end": "2025-12-31", "expect": ["20239840", "23900707"]},
+    {"name": "primary-device-only", "source": "FDA_MAUDE", "keywords": ["VersaOne"], "start": "2024-01-01", "end": "2025-12-31", "expect": ["23900707"], "intent": "exact_reported_device"},
+    {"name": "year-boundary-receipt", "source": "FDA_MAUDE", "keywords": ["VersaOne"], "start": "2026-01-01", "end": "2026-02-01", "expect": ["24093782"], "check": {"24093782": {"event_date": "2025-12-22", "search_date": "2026-01-16"}}},
+    {"name": "mhra-notice-day", "source": "MHRA_FSCA", "keywords": ["Spaceplus Infusomat"], "start": "2024-06-24", "end": "2024-06-24", "expect": ["30931286"], "check": {"30931286": {"report_date": "2024-07-09", "search_date": "2024-06-24", "source_type": "regulatory_recall"}}, "live": true},
+    {"name": "mhra-partial-date-within-month", "source": "MHRA_FSCA", "keywords": ["FiberOptix Ultra"], "start": "2024-04-01", "end": "2024-04-30", "expect": ["29529909"], "check": {"29529909": {"search_date": "April 2024"}}},
+    {"name": "mhra-partial-date-not-a-day", "source": "MHRA_FSCA", "keywords": ["FiberOptix Ultra"], "start": "2024-04-15", "end": "2024-04-15", "expect": []},
+    {"name": "mhra-product-family-decoys", "source": "MHRA_FSCA", "keywords": ["ventilator"], "start": "2024-01-01", "end": "2024-12-31", "expect": ["30458851"]}
+  ],
+  "edge_case_inputs": [
+    {"name": "overlapping-query-hits", "source": "FDA_MAUDE", "keywords": ["Versaport", "trocar"], "start": "2024-06-28", "end": "2024-06-28", "copies": [{"from": "19632393", "as": "19632393"}, {"from": "19632393", "as": "19632393"}], "expect": ["19632393"], "check": {"19632393": {"duplicate_count": 1}}},
+    {"name": "missing-identifiers-content-fallback", "source": "FDA_MAUDE", "keywords": ["CTF73"], "start": "2024-09-01", "end": "2024-09-30", "copies": [{"from": "20273790", "as": "no-id-1", "drop_ids": true}, {"from": "20273790", "as": "no-id-1", "drop_ids": true}, {"from": "20185941", "as": "no-id-2", "drop_ids": true}], "expect": ["no-id-1", "no-id-2"], "check": {"no-id-1": {"event_id": "", "duplicate_count": 1}, "no-id-2": {"event_id": "", "duplicate_count": 0}}},
+    {"name": "negated-malfunction-is-not-confirmed-break", "source": "FDA_MAUDE", "keywords": ["CTF73"], "start": "2024-09-01", "end": "2024-09-30", "copies": [{"from": "20273790", "as": "negated", "narrative": "No cannula fracture was observed. The trocar performed as expected."}], "expect": ["negated"], "check": {"negated": {"category": "Other"}}}
+  ]
+}

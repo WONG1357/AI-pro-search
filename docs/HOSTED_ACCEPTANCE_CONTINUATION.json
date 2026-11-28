@@ -1,0 +1,82 @@
+{
+  "checked_on_hong_kong_date": "2026-11-28",
+  "scope": "Credential-independent checks for the prescribed FDA MAUDE acceptance task and subsequent report recovery.",
+  "prescribed_query": {
+    "source": "FDA_MAUDE",
+    "device_term": "trocar",
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "max_pages": 1,
+    "max_records": 2,
+    "request_timeout_seconds": 10,
+    "source_timeout_seconds": 60,
+    "date_basis": "report_date"
+  },
+  "local_http_attempt": {
+    "environment": "Local deterministic toolkit",
+    "status": "failed",
+    "source_completeness": "failed",
+    "source_message": "FDA query 1 incomplete: SourceRequestError: ConnectionError after 3 attempts",
+    "counts": {"retrieved": 0, "returned": 0, "exported": 0},
+    "strict_diagnostic_report_verified": true,
+    "manifested_files_verified": 18,
+    "interpretation": "The connection failure leaves the presence of matching records unknown."
+  },
+  "positive_official_record_replay": {
+    "environment": "Local toolkit with a controlled openFDA response fixture",
+    "fixture_scope": "Replays selected fields transcribed from two FDA reports. The page order and pagination total are fixture inputs.",
+    "records": [
+      {
+        "mdr_report_key": "20155780",
+        "report_number": "3005075853-2024-06605",
+        "initial_fda_receipt_date": "2024-09-06",
+        "official_url": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20155780&pc=GCJ"
+      },
+      {
+        "mdr_report_key": "20200955",
+        "report_number": "3005075853-2024-06829",
+        "initial_fda_receipt_date": "2024-09-12",
+        "official_url": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfmaude/detail.cfm?mdrfoi__id=20200955&pc=GCJ"
+      }
+    ],
+    "adapter_http_calls_replayed": 1,
+    "counts": {"retrieved": 2, "returned": 2, "exported": 2},
+    "status": "incomplete",
+    "source_completeness": "partial",
+    "cap_disclosed": true,
+    "strict_report_verified": true
+  },
+  "local_mock_controller_recovery": {
+    "controller_created_one_detached_mock_session": true,
+    "same_intended_root_turn_recovered": true,
+    "additional_input_calls": 0,
+    "exact_turn_artifacts_downloaded": 19,
+    "manifested_files_verified": 18,
+    "foreign_turn_artifacts_excluded": 1,
+    "fixture_trace_command_outputs_checked": ["bundle SHA-256", "runtime package pins"],
+    "bundle_bytes_match_reviewed_local_git_archive": true,
+    "fixture_manifest_sha256_matched_downloaded_report": true,
+    "cleanup_after_local_retention_fixture_verified": true,
+    "cleanup_rejects_changed_local_retained_artifacts": true,
+    "official_trace_schema_reference": "https://developers.openai.com/api/reference/resources/beta/subresources/agents/subresources/sessions/subresources/turns/subresources/items/methods/list/"
+  },
+  "local_runtime": {
+    "python": "3.12.14",
+    "installed_cloud_toolkit_pins_verified": [
+      "pandas==2.2.3",
+      "requests==2.34.2",
+      "beautifulsoup4==4.15.0",
+      "python-dateutil==4.0.0",
+      "openpyxl==3.1.5",
+      "pypdf==6.21.4"
+    ],
+    "focused_tests": {"passed": 78, "skipped": 2},
+    "focused_test_scope": "tests/test_agent.py and tests/test_hosted.py. The local environment lacked the OpenAI SDK for the two SDK transport tests."
+  },
+  "pending_live_hosted_checks": [
+    "Confirm the intended dedicated credential, expiry policy, project, model, Agents and Responses permissions.",
+    "Submit the bounded public task to the actual OpenAI-hosted environment and observe a usable FDA result and the cloud execution trace.",
+    "Reconnect to the original real session and root turn, verify and durably retain its downloaded artifacts, and review the final answer against the evidence.",
+    "Check BfArM catalogue access from the actual hosted environment."
+  ]
+}

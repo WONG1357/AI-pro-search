@@ -33,8 +33,9 @@ def test_filter_records_keeps_source_query_match_without_keyword_repeat() -> Non
                 {
                     "source": "TGA_DAEN",
                     "event_id": "99093",
-                    "event_date": "2024-08-14",
-                    "year": 2024,
+                    "report_date": "2024-08-14",
+                    "date_received": "2024-08-14",
+                    "event_date": "",
                     "product_name": "Kii FIOS ADVFIX",
                     "brand_names": "",
                     "narrative_text": "Bowel perforated upon entry with the device.",
@@ -48,7 +49,7 @@ def test_filter_records_keeps_source_query_match_without_keyword_repeat() -> Non
     assert filtered.iloc[0]["event_id"] == "99093"
 
 
-def test_filter_records_uses_fda_maude_report_date_range() -> None:
+def test_filter_records_uses_fda_and_tga_report_dates_without_event_date_fallback() -> None:
     df = clean_records(
         pd.DataFrame(
             [
@@ -71,16 +72,27 @@ def test_filter_records_uses_fda_maude_report_date_range() -> None:
                     "brand_names": "",
                     "narrative_text": "Trocar issue reported.",
                 },
+                {
+                    "source": "TGA_DAEN",
+                    "event_id": "TGA-UNKNOWN-REPORT-DATE",
+                    "event_date": "2024-01-05",
+                    "product_name": "Trocar",
+                    "narrative_text": "Occurrence date is known but the report date is not.",
+                },
             ]
         )
     )
 
     filtered = filter_records(df, ["trocar"], [2024], start_date="2024-01-01", end_date="2024-12-31")
 
-    assert list(filtered["event_id"]) == ["18562812"]
-    assert filtered.iloc[0]["report_date"] == "2024-01-05"
-    assert filtered.iloc[0]["search_date"] == "2024-01-05"
-    assert filtered.iloc[0]["search_year"] == 2024
+    assert list(filtered["event_id"]) == ["18562812", "TGA-1"]
+    assert filtered["report_date"].tolist() == ["2024-01-05", "2024-01-05"]
+    assert filtered["search_date"].tolist() == ["2024-01-05", "2024-01-05"]
+    assert filtered["search_year"].tolist() == [2024, 2024]
+    assert filtered["search_date_basis"].tolist() == ["report_date", "report_date"]
+    unknown = df.loc[df["event_id"].eq("TGA-UNKNOWN-REPORT-DATE")].iloc[0]
+    assert unknown["event_date"] == "2024-01-05"
+    assert unknown["report_date"] == "" and unknown["search_date_basis"] == "unknown"
 
 
 def test_clean_records_builds_classification_text_from_problem_fields() -> None:

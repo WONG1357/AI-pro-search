@@ -1,0 +1,50 @@
+{
+  "checked_at": "2026-11-21T11:52:03.025566+00:00",
+  "scope": "One bounded post-fix request through the supplementary document fetcher. The caller timeout now applies to connection establishment as well as reading. Infrastructure check only, not a device-specific result, catalogue coverage check, or OpenAI-hosted run.",
+  "url": "https://www.bfarm.de/SharedDocs/Kundeninfos/DE/06/2025/57622-25_kundeninfo_de.pdf?__blob=publicationFile",
+  "earlier_result": {
+    "checked_at": "2026-11-21T11:49:49.162262+00:00",
+    "scope": "One bounded retry through the supplementary document fetcher after a connection timeout. Infrastructure check only, not a device-specific result, catalogue coverage check, or OpenAI-hosted run. A preceding independent ordinary GET had returned HTTP 200 with a PDF header.",
+    "url": "https://www.bfarm.de/SharedDocs/Kundeninfos/DE/06/2025/57622-25_kundeninfo_de.pdf?__blob=publicationFile",
+    "prior_fetcher_attempt": "ReadTimeout during proxy tunnel (5 seconds)",
+    "success": false,
+    "error_type": "ReadTimeout",
+    "coverage": "failed",
+    "elapsed_seconds": 5.008
+  },
+  "success": false,
+  "error_type": "ValueError",
+  "coverage": "failed",
+  "elapsed_seconds": 7.226,
+  "diagnostic_followup": {
+    "request_count": 1,
+    "http_status": 200,
+    "content_type": "application/pdf",
+    "downloaded_bytes": 2931270,
+    "raw_sha256": "0b7cea16c8b08fd4bcd67a94cbfe93776a8bd9b50995e8cf46fc5dcda370d79c",
+    "encrypted": false,
+    "pages": 8,
+    "extracted_characters_per_page": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "images_per_page": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "extraction_error": "Official document contains no extractable text; manual review or OCR is required",
+    "conclusion": "Image-only public PDF. Download works, text extraction does not; this is not an empty notice or verified device-specific evidence. No OCR or vision review performed."
+  }
+}

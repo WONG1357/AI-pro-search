@@ -7,10 +7,10 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 import requests
@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
 from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
+from pipeline.source_support import request_with_retry, reject_challenge_html, with_coverage
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,9 @@ class BfarmRecallConnector(BaseSourceConnector):
         progress_reporter: ProgressReporter | None = None,
         **kwargs: Any,
     ) -> SourceFetchResult:
-        config = self.client_config
+        config = replace(self.client_config)
+        if kwargs.get("request_timeout"):
+            config.timeout = float(kwargs["request_timeout"])
         try:
             df, warnings = fetch_bfarm_recalls_direct(
                 keywords=_merge_terms(keywords, components, accident_terms),
@@ -71,6 +74,7 @@ class BfarmRecallConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
+                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
                 debug=bool(kwargs.get("debug", False)),
                 session=kwargs.get("session"),
             )
@@ -101,6 +105,7 @@ def fetch_bfarm_recalls_direct(
     max_pages: int | None = None,
     debug: bool = False,
     session: requests.Session | None = None,
+    max_records: int | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Fetch BfArM recall notices from the public expert search form."""
     config = client_config or BfarmClientConfig()
@@ -113,15 +118,22 @@ def fetch_bfarm_recalls_direct(
     desired_years = set(int(year) for year in years)
     total_steps = max(1, len(terms) * 2)
     step = 0
+    failures = 0
+    capped = False
+    page_limit = int(max_pages) if max_pages is not None else 100
+    pages_fetched = 0
+    if page_limit < 1 or (max_records is not None and max_records < 1):
+        raise ValueError("BfArM retrieval limits must be positive")
 
     for keyword in terms or [""]:
-        if _has_records_for_all_desired_years(records_by_key, desired_years):
-            warnings.append("BfArM stopped after selected-year records were found; skipped remaining broad terms to avoid rate limiting.")
+        if pages_fetched >= page_limit or (max_records and len(records_by_key) >= max_records):
+            capped = True
             break
         step += 1
         try:
             initial_response = fetch_bfarm_search_page(keyword, session=session, client_config=config, debug=debug)
-        except RuntimeError as exc:
+        except (requests.RequestException, RuntimeError) as exc:
+            failures += 1
             warnings.append(str(exc))
             continue
         period_links = extract_bfarm_period_links(initial_response.text, initial_response.url)
@@ -144,14 +156,38 @@ def fetch_bfarm_recalls_direct(
 
         for link in selected_links:
             step += 1
-            try:
-                response = fetch_bfarm_url(link["url"], session=session, client_config=config, debug=debug)
-            except RuntimeError as exc:
-                warnings.append(str(exc))
-                continue
-            records = parse_bfarm_results(response.text, response.url)
-            records = [record for record in records if _is_medical_device_customer_information(record)]
-            _add_bfarm_records(records, records_by_key, desired_years, start_date=start_date_text, end_date=end_date_text)
+            page_url: str | None = link["url"]
+            seen_page_urls: set[str] = set()
+            seen_page_hashes: set[str] = set()
+            while page_url:
+                if pages_fetched >= page_limit or (max_records and len(records_by_key) >= max_records):
+                    capped = True
+                    break
+                if page_url in seen_page_urls:
+                    failures += 1
+                    warnings.append("BfArM pagination repeated a URL; coverage incomplete")
+                    break
+                seen_page_urls.add(page_url)
+                try:
+                    response = fetch_bfarm_url(page_url, session=session, client_config=config, debug=debug)
+                    pages_fetched += 1
+                    page_hash = hashlib.sha256(response.content).hexdigest()
+                    if page_hash in seen_page_hashes:
+                        raise RuntimeError("BfArM pagination repeated a result page")
+                    seen_page_hashes.add(page_hash)
+                    records = parse_bfarm_results(response.text, response.url)
+                    if not records and not re.search(r"no (?:results|matches)|0 results|keine (?:treffer|ergebnisse)", response.text, re.I):
+                        raise RuntimeError("BfArM listing format not recognized; empty search not verified")
+                    records = [record for record in records if _is_medical_device_customer_information(record)]
+                    _add_bfarm_records(records, records_by_key, desired_years, start_date=start_date_text, end_date=end_date_text)
+                    if max_records and len(records_by_key) > max_records:
+                        records_by_key = dict(list(records_by_key.items())[:max_records])
+                        capped = True
+                    page_url = _bfarm_next_page(response.text, response.url, config.base_url)
+                except (requests.RequestException, RuntimeError) as exc:
+                    failures += 1
+                    warnings.append(str(exc))
+                    break
             if progress_reporter:
                 progress_reporter.update_source(
                     SOURCE_NAME,
@@ -159,14 +195,34 @@ def fetch_bfarm_recalls_direct(
                     total_steps=max(total_steps, step),
                     records_fetched=len(records_by_key),
                     stage="Fetching BfArM period results",
-                    message=f"keyword={keyword} period={link['label']} records={len(records)}",
+                    message=f"keyword={keyword} period={link['label']} records={len(records_by_key)}",
                 )
 
     normalized = list(records_by_key.values())
     if progress_reporter:
         progress_reporter.complete_source(SOURCE_NAME, records_fetched=len(normalized), message="BfArM completed")
     warnings.append(f"bfarm_records={len(normalized)}")
-    return ensure_unified_columns(pd.DataFrame(normalized)), warnings
+    if capped:
+        warnings.append(f"BfArM retrieval capped: max_pages={page_limit}, max_records={max_records}")
+    warnings.append("BfArM HTML listing coverage is unverified; retrieved notices are not an exhaustive incident database")
+    df = ensure_unified_columns(pd.DataFrame(normalized))
+    coverage = "failed" if failures and not normalized else "partial" if failures or capped else "unverified"
+    return with_coverage(df, coverage, warnings), warnings
+
+
+def _bfarm_next_page(html: str, page_url: str, base_url: str) -> str | None:
+    """Follow only an explicit next link on the configured official host."""
+    soup = BeautifulSoup(html, "html.parser")
+    for anchor in soup.find_all("a", href=True):
+        label = " ".join([anchor.get_text(" ", strip=True), str(anchor.get("aria-label", "")), str(anchor.get("title", ""))])
+        rel = anchor.get("rel", [])
+        if "next" not in rel and not re.search(r"\b(next|weiter|nächste)\b|^[›»]$", label.strip(), re.I):
+            continue
+        url = _absolute_bfarm_url(page_url, anchor["href"])
+        if urlparse(url).scheme not in {"http", "https"} or urlparse(url).hostname != urlparse(base_url).hostname:
+            raise RuntimeError("BfArM next-page link points outside the configured source")
+        return url
+    return None
 
 
 def _has_records_for_all_desired_years(records_by_key: dict[str, dict[str, Any]], desired_years: set[int]) -> bool:
@@ -189,7 +245,7 @@ def fetch_bfarm_search_page(
 ) -> requests.Response:
     """Submit one BfArM expert search request."""
     params = build_bfarm_search_payload(keyword, year_facet=year_facet)
-    response = session.get(
+    response = request_with_retry(session, "GET",
         client_config.search_url,
         params=params,
         headers=_headers(client_config),
@@ -197,8 +253,7 @@ def fetch_bfarm_search_page(
     )
     if debug:
         logger.debug("BfArM GET %s params=%s status=%s snippet=%s", client_config.search_url, params, response.status_code, response.text[:1000])
-    if response.status_code >= 400:
-        raise RuntimeError(f"HTTP {response.status_code} for {response.url}: {response.text[:1000]}")
+    reject_challenge_html(response.text, "BfArM")
     return response
 
 
@@ -209,18 +264,9 @@ def fetch_bfarm_url(
     debug: bool = False,
 ) -> requests.Response:
     """Fetch a BfArM result/filter URL with a small retry for rate limiting."""
-    for attempt in range(3):
-        response = session.get(url, headers=_headers(client_config), timeout=client_config.timeout)
-        if debug:
-            logger.debug("BfArM GET %s status=%s snippet=%s", url, response.status_code, response.text[:1000])
-        if response.status_code != 429:
-            if response.status_code >= 400:
-                raise RuntimeError(f"HTTP {response.status_code} for {response.url}: {response.text[:1000]}")
-            return response
-        retry_after = response.headers.get("Retry-After")
-        wait_seconds = float(retry_after) if retry_after and retry_after.isdigit() else 1.5 * (attempt + 1)
-        time.sleep(wait_seconds)
-    raise RuntimeError(f"HTTP 429 for {url}: BfArM rate limit after retries")
+    response = request_with_retry(session, "GET", url, headers=_headers(client_config), timeout=client_config.timeout)
+    reject_challenge_html(response.text, "BfArM")
+    return response
 
 
 def build_bfarm_search_payload(keyword: str, year_facet: str | None = None) -> dict[str, str]:
@@ -303,7 +349,7 @@ def parse_bfarm_results(html: str, page_url: str) -> list[dict[str, Any]]:
                 "title": title,
                 "text": text,
                 "url": _absolute_bfarm_url(page_url, link["href"]) if link else page_url,
-                "date": _clean_labeled_text(date_node.get_text(" ", strip=True)) if date_node else _extract_date(text),
+                "date": _clean_labeled_text(date_node.get_text(" ", strip=True)) if date_node else "",
                 "topic": _clean_labeled_text(topic_node.get_text(" ", strip=True)) if topic_node else "",
                 "notice_type": _clean_labeled_text(type_node.get_text(" ", strip=True)) if type_node else "",
                 "reference": reference,
@@ -318,7 +364,9 @@ def normalize_bfarm_record(raw: dict[str, Any]) -> dict[str, Any]:
     text = str(raw.get("text") or "").strip()
     reference = str(raw.get("reference") or "").strip()
     event_id = reference or _stable_id(title, text, str(raw.get("url") or ""))
-    event_date = format_fda_date(raw.get("date")) or _extract_date(text)
+    publication_date = format_fda_date(raw.get("date"))
+    search_date = publication_date or _extract_date(text)
+    date_basis = "notice_publication_date" if publication_date else "listing_text_date" if search_date else "unknown"
     notice_type = str(raw.get("notice_type") or "Customer information").strip()
     record = {
         "source": SOURCE_NAME,
@@ -326,10 +374,13 @@ def normalize_bfarm_record(raw: dict[str, Any]) -> dict[str, Any]:
         "event_id": event_id,
         "report_number": event_id,
         "date_of_event": "",
-        "date_received": event_date,
-        "event_date": event_date,
-        "year": parse_year_from_date(event_date),
-        "received_year": parse_year_from_date(event_date),
+        "date_received": "",
+        "report_date": publication_date,
+        "event_date": "",
+        "search_date": search_date,
+        "search_date_basis": date_basis,
+        "year": parse_year_from_date(search_date),
+        "received_year": None,
         "country": COUNTRY,
         "manufacturer": _extract_manufacturer(title),
         "product_name": title,
@@ -349,11 +400,11 @@ def normalize_bfarm_record(raw: dict[str, Any]) -> dict[str, Any]:
         "source_category_code": reference,
         "source_category_system": "BfArM expert search",
         "record_hash": "",
-        "source_specific": json.dumps(raw, ensure_ascii=False, default=str),
+        "source_specific": json.dumps({**raw, "date_basis": date_basis}, ensure_ascii=False, default=str),
         "raw_record": json.dumps(raw, ensure_ascii=False, default=str),
     }
     record["record_hash"] = hashlib.sha256(
-        "|".join([str(record.get("source")), str(record.get("event_id")), str(record.get("event_date")), str(record.get("product_name"))]).encode("utf-8")
+        "|".join([str(record.get("source")), str(record.get("event_id")), search_date, str(record.get("product_name"))]).encode("utf-8")
     ).hexdigest()
     return record
 
@@ -370,7 +421,7 @@ def _add_bfarm_records(
         rec["source_query_match"] = True
         if desired_years and rec.get("year") not in desired_years:
             continue
-        if (start_date is not None or end_date is not None) and not date_or_year_in_range(rec.get("event_date"), start_date, end_date):
+        if (start_date is not None or end_date is not None) and not date_or_year_in_range(rec.get("search_date"), start_date, end_date):
             continue
         key = rec["event_id"]
         existing = records_by_key.get(key)
@@ -466,20 +517,9 @@ def _merge_terms(keywords: list[str], components: list[str] | None, accident_ter
 
 def _bfarm_search_terms(terms: list[str]) -> list[str]:
     """Use focused BfArM product terms to avoid rate limiting on broad incident words."""
-    broad_terms = {
-        "leak",
-        "fixation",
-        "puncture",
-        "death",
-        "injury",
-        "infection",
-        "blade",
-        "pyramidal tip",
-    }
-    focused = [term for term in terms if term.lower() not in broad_terms]
-    if any(term.lower() == "trocar" for term in focused):
-        return ["Trocar"]
-    return _dedupe_terms(focused or terms)
+    # Choosing a query budget may limit a run, but must never silently discard
+    # requested brands or replace them with a generic product term.
+    return _dedupe_terms(["Trocar" if term.lower() == "trocar" else term for term in terms])
 
 
 def _dedupe_terms(terms: list[str]) -> list[str]:

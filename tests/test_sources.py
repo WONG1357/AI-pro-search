@@ -176,7 +176,7 @@ def test_openfda_queries_by_report_date(monkeypatch) -> None:
     assert "date_received:[20240201 TO 20240229]" in calls[0]["params"]["search"]
     assert "date_of_event" not in calls[0]["params"]["search"]
     assert progress_updates
-    assert progress_updates[0][1] == 3
+    assert progress_updates[0][1] == 5
 
 
 def sample_swissmedic_raw() -> dict:
@@ -233,7 +233,9 @@ def test_swissmedic_normalization_maps_recall_fields() -> None:
     assert normalized["source"] == "SWISSMEDIC_FSCA"
     assert normalized["source_type"] == "regulatory_recall"
     assert normalized["event_id"] == "Vk_20240304_29"
-    assert normalized["event_date"] == "2024-03-05"
+    assert normalized["event_date"] == normalized["date_received"] == ""
+    assert normalized["search_date"] == "2024-03-05"
+    assert normalized["search_date_basis"] == "publication_date"
     assert normalized["manufacturer"] == "Covidien llc"
     assert normalized["product_name"] == "Auto Suture Structural Balloon Trocar"
     assert normalized["device_model"] == "OMS-T10SB"
@@ -329,9 +331,11 @@ def test_mhra_date_range_filter_excludes_out_of_range_records() -> None:
     )
 
     assert record["year"] == 2024
-    assert record["event_date"] == "2024-03-05"
-    assert date_or_year_in_range(record["event_date"], "2024-03-01", "2024-03-31") is True
-    assert date_or_year_in_range(record["event_date"], "2024-04-01", "2024-04-30") is False
+    assert record["event_date"] == record["date_received"] == ""
+    assert record["search_date"] == "2024-03-05"
+    assert record["search_date_basis"] == "source_issued_date"
+    assert date_or_year_in_range(record["search_date"], "2024-03-01", "2024-03-31") is True
+    assert date_or_year_in_range(record["search_date"], "2024-04-01", "2024-04-30") is False
 
 
 def test_mhra_partial_date_is_preserved() -> None:
@@ -346,7 +350,9 @@ def test_mhra_partial_date_is_preserved() -> None:
     """
     raw = parse_mhra_notice_page(html, "https://www.gov.uk/drug-device-alerts/test", keyword="example")[0]
     normalized = normalize_mhra_fsca_record(raw)
-    assert normalized["event_date"] == "March 2024"
+    assert normalized["event_date"] == ""
+    assert normalized["search_date"] == "March 2024"
+    assert normalized["search_date_basis"] == "manufacturer_notice_date"
 
 
 def test_bfarm_parser_and_normalization() -> None:
@@ -374,7 +380,9 @@ def test_bfarm_parser_and_normalization() -> None:
     normalized = normalize_bfarm_record(parsed[0])
     assert normalized["source"] == "BFARM_RECALLS"
     assert normalized["event_id"] == "06720/23"
-    assert normalized["event_date"] == "2023-05-02"
+    assert normalized["event_date"] == normalized["date_received"] == ""
+    assert normalized["search_date"] == "2023-05-02"
+    assert normalized["search_date_basis"] == "notice_publication_date"
     assert normalized["event_link"] == "https://www.bfarm.de/SharedDocs/Kundeninfos/EN/13/2023/06720-23_kundeninfo_en.pdf?__blob=publicationFile"
 
 
@@ -392,9 +400,10 @@ def test_bfarm_date_range_filter_excludes_out_of_range_records() -> None:
     )
 
     assert record["year"] == 2023
-    assert record["event_date"] == "2023-05-02"
-    assert date_or_year_in_range(record["event_date"], "2023-05-01", "2023-05-31") is True
-    assert date_or_year_in_range(record["event_date"], "2024-01-01", "2024-12-31") is False
+    assert record["event_date"] == ""
+    assert record["search_date"] == "2023-05-02"
+    assert date_or_year_in_range(record["search_date"], "2023-05-01", "2023-05-31") is True
+    assert date_or_year_in_range(record["search_date"], "2024-01-01", "2024-12-31") is False
 
 
 def test_bfarm_search_payload() -> None:
@@ -476,7 +485,8 @@ def test_health_canada_normalization_preserves_source_specific_fields() -> None:
 
     assert normalized["source"] == "HEALTH_CANADA_MDI"
     assert normalized["event_id"] == "997411"
-    assert normalized["event_date"] == "2024-08-14"
+    assert normalized["event_date"] == ""
+    assert normalized["report_date"] == "2024-08-14"
     assert normalized["product_name"] == "ENDOPATH XCEL"
     assert normalized["manufacturer"] == "Ethicon"
     assert normalized["device_problem_text"] == "A0401 - Break"
@@ -741,7 +751,10 @@ def test_tga_report_normalization_maps_unified_fields() -> None:
     )
     assert normalized["source"] == "TGA_DAEN"
     assert normalized["event_id"] == "126402"
-    assert normalized["date_of_event"] == "2026-01-21"
+    assert normalized["date_of_event"] == ""
+    assert normalized["event_date"] == ""
+    assert normalized["report_date"] == "2026-01-21"
+    assert normalized["date_received"] == "2026-01-21"
     assert normalized["product_name"] == "OPT Bladeless Stability"
     assert normalized["record_hash"]
 
@@ -874,6 +887,8 @@ def test_tga_direct_fetch_failed_request() -> None:
         make_response(200, b"<html>entry</html>", "text/html"),
         make_response(200, b'{"d":null}'),
         make_response(500, b"server error", "text/plain"),
+        make_response(500, b"server error", "text/plain"),
+        make_response(500, b"server error", "text/plain"),
     ])
     config = TgaDaenClientConfig(
         search_page_url="https://example.test/tga",
@@ -884,7 +899,8 @@ def test_tga_direct_fetch_failed_request() -> None:
 
     result = TgaDaenConnector(client_config=config).fetch(["trocar"], [2025], session=session, start_date="2024-01-01", end_date="2026-02-07")
 
-    assert result.success is True
+    assert result.success is False
+    assert result.completeness == "failed"
     assert result.records.empty
     assert result.warnings
 

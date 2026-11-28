@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 from urllib.parse import urljoin
@@ -19,6 +19,7 @@ from pipeline.config import MHRA_FSCA_BASE_URL, MHRA_FSCA_SEARCH_ENDPOINT, MHRA_
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
 from pipeline.utils import date_or_year_in_range, format_fda_date, parse_year_from_date
+from pipeline.source_support import request_with_retry, reject_challenge_html, with_coverage
 
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class MhraFscaConnector(BaseSourceConnector):
         **kwargs: Any,
     ) -> SourceFetchResult:
         """Fetch MHRA FSN records for the requested keywords and years."""
-        config = self.client_config
+        config = replace(self.client_config)
         if kwargs.get("request_timeout"):
             config.timeout = float(kwargs["request_timeout"])
         try:
@@ -74,6 +75,7 @@ class MhraFscaConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
+                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
                 debug=bool(kwargs.get("debug", False)),
                 session=kwargs.get("session"),
             )
@@ -112,11 +114,10 @@ def fetch_mhra_search_page(
 ) -> requests.Response:
     """Fetch one GOV.UK MHRA FSN search page."""
     params = build_mhra_search_params(keyword, page=page)
-    response = session.get(client_config.search_url, params=params, headers=_headers(client_config), timeout=client_config.timeout)
+    response = request_with_retry(session, "GET", client_config.search_url, params=params, headers=_headers(client_config), timeout=client_config.timeout)
     if debug:
         logger.debug("MHRA GET %s params=%s status=%s snippet=%s", client_config.search_url, params, response.status_code, response.text[:1000])
-    if response.status_code >= 400:
-        raise RuntimeError(f"HTTP {response.status_code} for {response.url}: {response.text[:1000]}")
+    reject_challenge_html(response.text, "MHRA")
     return response
 
 
@@ -145,13 +146,13 @@ def parse_mhra_notice_page(html: str, page_url: str, keyword: str = "") -> list[
     """Parse one weekly MHRA FSN page into individual manufacturer/device records."""
     soup = BeautifulSoup(html, "html.parser")
     title = (soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else "").strip()
-    issued_text = ""
-    for dt in soup.find_all(["dt", "span"]):
-        if "Issued" in dt.get_text(" ", strip=True):
-            dd = dt.find_next(["dd", "span"])
-            issued_text = dd.get_text(" ", strip=True) if dd else ""
-            break
-    issued_date = format_fda_date(issued_text)
+    weekly_issued_date = ""
+    for label in soup.find_all(["dt", "span"]):
+        if label.get_text(" ", strip=True).rstrip(":").casefold() == "issued":
+            value = label.find_next_sibling(["dd", "span"])
+            if value and parse_year_from_date(value.get_text(" ", strip=True)):
+                weekly_issued_date = format_fda_date(value.get_text(" ", strip=True))
+                break
     content = soup.select_one(".gem-c-govspeak") or soup.select_one("#contents") or soup
     records: list[dict[str, Any]] = []
     headings = content.find_all(["h2", "h3"])
@@ -164,20 +165,25 @@ def parse_mhra_notice_page(html: str, page_url: str, keyword: str = "") -> list[
         node = heading.find_next_sibling()
         while node and getattr(node, "name", None) not in {"h2", "h3"}:
             if hasattr(node, "get_text"):
-                block_text_parts.append(node.get_text(" ", strip=True))
+                part = node.get_text(" ", strip=True)
+                if part:
+                    block_text_parts.append(part)
                 for link in node.find_all("a", href=True):
                     links.append({"text": link.get_text(" ", strip=True), "url": urljoin(page_url, link["href"])})
             node = node.find_next_sibling()
-        block_text = " ".join(part for part in block_text_parts if part)
+        block_text = " ".join(block_text_parts)
         if keyword and keyword.lower() not in f"{heading_text} {block_text}".lower():
             continue
+        notice_date = _extract_notice_date(block_text_parts[0]) if block_text_parts else ""
         records.append(
             {
                 "weekly_title": title,
                 "weekly_url": page_url,
                 "heading": heading_text,
                 "body": block_text,
-                "issued_date": issued_date or _extract_notice_date(block_text),
+                "notice_date": notice_date,
+                "weekly_issued_date": weekly_issued_date,
+                "issued_date": notice_date or weekly_issued_date,
                 "links": links,
             }
         )
@@ -194,6 +200,7 @@ def fetch_mhra_fsca_direct(
     max_pages: int | None = None,
     debug: bool = False,
     session: requests.Session | None = None,
+    max_records: int | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Fetch MHRA field safety notices using keyword OR semantics."""
     config = client_config or MhraFscaClientConfig()
@@ -201,42 +208,74 @@ def fetch_mhra_fsca_direct(
     terms = _merge_terms(keywords, None, None)
     warnings: list[str] = []
     normalized: list[dict[str, Any]] = []
-    seen_pages: set[str] = set()
     seen_records: set[str] = set()
+    detail_cache: dict[str, str] = {}
     total_terms = max(1, len(terms))
+    failures = 0
+    capped = False
+    page_limit = int(max_pages) if max_pages is not None else 100
+    if page_limit < 1 or (max_records is not None and max_records < 1):
+        raise ValueError("MHRA retrieval limits must be positive")
 
     if progress_reporter:
         progress_reporter.update_source(SOURCE_NAME, current_step=0, total_steps=total_terms, records_fetched=0, stage="Searching MHRA FSNs")
 
     for term_index, keyword in enumerate(terms or [""], start=1):
+        if max_records and len(normalized) >= max_records:
+            capped = True
+            break
         page = 1
+        seen_pages: set[str] = set()
         while True:
-            response = fetch_mhra_search_page(keyword, page, session, config, debug=debug)
+            try:
+                response = fetch_mhra_search_page(keyword, page, session, config, debug=debug)
+            except (requests.RequestException, RuntimeError) as exc:
+                failures += 1
+                warnings.append(f"MHRA keyword={keyword} page={page} failed: {type(exc).__name__}: {exc}")
+                break
             page_hash = hashlib.sha256(response.content).hexdigest()
             if page_hash in seen_pages:
+                failures += 1
                 warnings.append(f"Repeated MHRA search page for keyword={keyword} page={page}; stopped pagination")
                 break
             seen_pages.add(page_hash)
             result_pages = parse_mhra_search_results(response.text, config.base_url)
             if not result_pages:
+                if not re.search(r"no (?:results|matches)|0 (?:results|notices|alerts)", response.text, re.I):
+                    failures += 1
+                    warnings.append("MHRA listing format not recognized; empty search not verified")
                 break
             for result_page in result_pages:
-                detail = session.get(result_page["url"], headers=_headers(config), timeout=config.timeout)
-                if detail.status_code >= 400:
-                    warnings.append(f"MHRA detail fetch failed {detail.status_code}: {result_page['url']}")
+                try:
+                    if result_page["url"] not in detail_cache:
+                        detail = request_with_retry(session, "GET", result_page["url"], headers=_headers(config), timeout=config.timeout)
+                        reject_challenge_html(detail.text, "MHRA detail")
+                        if not BeautifulSoup(detail.text, "html.parser").find_all(["h2", "h3"]):
+                            raise RuntimeError("MHRA notice structure not recognized")
+                        detail_cache[result_page["url"]] = detail.text
+                    raw_records = parse_mhra_notice_page(detail_cache[result_page["url"]], result_page["url"], keyword=keyword)
+                except (requests.RequestException, RuntimeError) as exc:
+                    failures += 1
+                    warnings.append(f"MHRA detail fetch failed: {type(exc).__name__}: {exc}")
                     continue
-                raw_records = parse_mhra_notice_page(detail.text, result_page["url"], keyword=keyword)
                 for raw in raw_records:
+                    if not raw["weekly_issued_date"]:
+                        raw["weekly_issued_date"] = format_fda_date(result_page.get("issued_date"))
+                        raw["issued_date"] = raw["notice_date"] or raw["weekly_issued_date"]
                     record = normalize_mhra_fsca_record(raw)
                     record["source_query_match"] = True
                     if years and record.get("year") not in years:
                         continue
-                    if (start_date is not None or end_date is not None) and not date_or_year_in_range(record.get("event_date"), start_date, end_date):
+                    if (start_date is not None or end_date is not None) and not date_or_year_in_range(record.get("search_date"), start_date, end_date):
                         continue
                     key = record["event_id"]
                     if key not in seen_records:
                         normalized.append(record)
                         seen_records.add(key)
+                if max_records and len(normalized) >= max_records:
+                    capped = True
+                    normalized = normalized[:max_records]
+                    break
             if progress_reporter:
                 progress_reporter.update_source(
                     SOURCE_NAME,
@@ -246,23 +285,47 @@ def fetch_mhra_fsca_direct(
                     stage="Fetching MHRA FSNs",
                     message=f"keyword={keyword} page={page} weekly_pages={len(result_pages)} records={len(normalized)}",
                 )
-            if max_pages and page >= max_pages:
-                warnings.append(f"Stopped at max_pages={max_pages} for keyword={keyword}")
+            if capped:
                 break
             if not _has_next_page(response.text):
+                break
+            if page >= page_limit:
+                capped = True
+                warnings.append(f"Stopped at max_pages={page_limit} for keyword={keyword}")
                 break
             page += 1
 
     df = ensure_unified_columns(pd.DataFrame(normalized))
     warnings.append(f"mhra_fsca_records={len(df)}")
-    return df, warnings
+    if capped:
+        warnings.append(f"MHRA retrieval capped: max_pages={page_limit}, max_records={max_records}")
+    warnings.append("MHRA retrieval covers indexed notice headings and excerpts; full attachment content and exhaustive coverage are unverified")
+    warnings.append(
+        "MHRA filters by individual notice date when supplied, otherwise by weekly publication date. "
+        "Partial dates qualify only when the whole known period is inside the requested range."
+    )
+    coverage = "failed" if failures and not normalized else "partial" if failures or capped else "unverified"
+    return with_coverage(df, coverage, warnings), warnings
 
 
 def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize one MHRA field safety notice item."""
     heading = raw.get("heading", "")
     manufacturer, product = _split_heading(heading)
-    issued_date = format_fda_date(raw.get("issued_date"))
+    notice_date = format_fda_date(raw.get("notice_date"))
+    weekly_date = format_fda_date(raw.get("weekly_issued_date"))
+    # Older callers supplied a single issued date with no distinction between levels.
+    legacy_date = format_fda_date(raw.get("issued_date")) if "notice_date" not in raw else ""
+    issued_date = notice_date or weekly_date or legacy_date
+    report_date = weekly_date or legacy_date
+    if notice_date:
+        date_basis = "manufacturer_notice_date"
+    elif weekly_date:
+        date_basis = "weekly_publication_date"
+    elif legacy_date:
+        date_basis = "source_issued_date"
+    else:
+        date_basis = "unknown"
     links = raw.get("links") if isinstance(raw.get("links"), list) else []
     fsn_link = _preferred_fsn_link(links) or raw.get("weekly_url", "")
     event_id = _stable_id(raw.get("weekly_url", ""), heading, fsn_link)
@@ -270,6 +333,9 @@ def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
     source_specific = {
         "weekly_title": raw.get("weekly_title"),
         "weekly_url": raw.get("weekly_url"),
+        "date_basis": date_basis,
+        "notice_date": notice_date,
+        "weekly_issued_date": weekly_date,
         "heading": heading,
         "links": links,
     }
@@ -279,10 +345,13 @@ def normalize_mhra_fsca_record(raw: dict[str, Any]) -> dict[str, Any]:
         "event_id": event_id,
         "report_number": event_id,
         "date_of_event": "",
-        "date_received": issued_date,
-        "event_date": issued_date,
+        "date_received": "",
+        "report_date": report_date,
+        "event_date": "",
+        "search_date": issued_date,
+        "search_date_basis": date_basis,
         "year": parse_year_from_date(issued_date),
-        "received_year": parse_year_from_date(issued_date),
+        "received_year": None,
         "country": COUNTRY,
         "manufacturer": manufacturer,
         "product_name": product or heading,
@@ -333,16 +402,15 @@ def _extract_model(text: str) -> str:
 
 
 def _extract_notice_date(text: str) -> str:
-    """Extract source-provided full or partial FSN date text from a notice block."""
-    patterns = [
-        r"\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b",
-        r"\b[A-Za-z]+\s+\d{4}\b",
-        r"\b\d{4}-\d{2}-\d{2}\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return format_fda_date(match.group(0))
+    """Read the leading FSN date while excluding model numbers and prose dates."""
+    match = re.fullmatch(
+        r"^(?:(?:issued|date|FSN date)\s*:\s*)?"
+        r"(\d{4}(?:-\d{2}){0,2}|\d{1,2}/\d{1,2}/\d{4}|(?:\d{1,2}\s+)?[A-Za-z]+\s+\d{4})"
+        r"(?:\s+FSN-[A-Z0-9][A-Z0-9./-]*)?",
+        text.strip(), re.I,
+    )
+    if match and parse_year_from_date(match[1]) is not None:
+        return format_fda_date(match[1])
     return ""
 
 
@@ -372,7 +440,7 @@ def _record_hash(record: dict[str, Any]) -> str:
             [
                 str(record.get("source", "")),
                 str(record.get("event_id", "")),
-                str(record.get("event_date", "")),
+                str(record.get("search_date", "")),
                 str(record.get("product_name", "")),
             ]
         ).encode("utf-8")

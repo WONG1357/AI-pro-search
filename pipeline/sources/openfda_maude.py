@@ -8,7 +8,7 @@ import pandas as pd
 
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
-from pipeline.sources_openfda import fetch_fda_maude_openfda
+from pipeline.sources_openfda import FDA_SEARCH_FIELDS, fetch_fda_maude_openfda
 
 
 class OpenFdaMaudeConnector(BaseSourceConnector):
@@ -30,7 +30,7 @@ class OpenFdaMaudeConnector(BaseSourceConnector):
         """Fetch and normalize FDA MAUDE records."""
         try:
             search_terms = _merge_terms(keywords, components, accident_terms)
-            total_steps = max(1, len(search_terms) * len(years) * 3)
+            total_steps = max(1, len(search_terms) * len(years) * len(FDA_SEARCH_FIELDS))
             start_date = kwargs.get("start_date")
             end_date = kwargs.get("end_date")
             if progress_reporter:
@@ -62,9 +62,13 @@ class OpenFdaMaudeConnector(BaseSourceConnector):
                 start_date=start_date,
                 end_date=end_date,
                 limit_per_query=kwargs.get("limit_per_query", 100),
-                max_skip_per_query=kwargs.get("max_skip_per_query", 1000),
+                max_skip_per_query=min(
+                    int(kwargs.get("max_skip_per_query", 1000)),
+                    int(kwargs.get("max_pages") or 1000) * int(kwargs.get("limit_per_query", 100)),
+                ),
                 request_timeout=int(kwargs.get("request_timeout") or 60),
                 progress_callback=report_openfda_progress,
+                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
             )
             if progress_reporter:
                 progress_reporter.update_source(

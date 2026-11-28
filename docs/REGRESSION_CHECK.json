@@ -1,0 +1,12 @@
+{
+  "checked_at": "2026-11-21T11:52:55.660382+00:00",
+  "baseline_commit": "d67c548ae5aa7ebe9d0b233204c277dbf62cf413",
+  "command": "python -m pytest -q",
+  "python_version": "3.12.14",
+  "passed": 278,
+  "failed": 0,
+  "warnings": 1,
+  "elapsed_seconds": 6.47,
+  "warning_note": "Third-party anyio pytest plugin uses a pytest API scheduled for removal; no application test failures.",
+  "scope": "Deterministic local regression suite, including the real installed OpenAI SDK with an in-memory HTTP transport. No live OpenAI API execution or credentials were used."
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+from datetime import date
 from pathlib import Path
 
 
@@ -63,16 +64,9 @@ DEFAULT_KEYWORDS = [
     "Apple Trocar",
     "Lina Port",
     "Trocar",
-    "leak",
-    "fixation",
-    "puncture",
-    "death",
-    "injury",
-    "infection",
-    "blade",
     "pyramidal tip",
 ]
-DEFAULT_TARGET_YEARS = [2024, 2025, 2026]
+DEFAULT_TARGET_YEARS = list(range(date.today().year - 2, date.today().year + 1))
 
 UNIFIED_COLUMNS = [
     "source",

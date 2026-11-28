@@ -1,0 +1,115 @@
+{
+  "checked_at": "2026-11-28",
+  "official_positive_reference": {
+    "source": "TGA FOI 26-2331, Document 35, DAEN medical-devices List of reports",
+    "url": "https://www.tga.gov.au/sites/default/files/2026-01/FOI%2026-2331.pdf",
+    "print_generated_date": "2025-11-19",
+    "selected_device_count": 6,
+    "start_date": "2020-01-01",
+    "end_date": "2022-12-31",
+    "report_count": 15,
+    "print_page_count": 18,
+    "known_report": {
+      "print_page": 6,
+      "report_number": "67102",
+      "report_date": "2020-12-14",
+      "artg_number": "339475",
+      "manufacturer": "SOFTMED MANUFACTURING PTY LTD",
+      "device_model": "780511",
+      "artg_url": "https://www.tga.gov.au/resources/artg/339475"
+    }
+  },
+  "offline_verification": {
+    "status": "passed",
+    "scope": "Simulated portal transport and parser fixtures based on the official report's field layout. The PDF test supplies representative extracted text and the HTML fixtures reconstruct the tables. They do not replay downloaded original report bytes or a current portal session.",
+    "checked": [
+      "Quoted ASP.NET postbacks with query and pagination form state",
+      "Selected-device count and exact report-date scope in HTML and print output",
+      "Official print labels and footnotes, multiline narrative, ARTG identity, and separate event type and patient outcome",
+      "Summary rows retain device identity without inventing incident narrative",
+      "Complete two-page result, explicit page cap, and rejection of a page with a changed report interval"
+    ],
+    "tga_tests_passed": 42
+  },
+  "current_portal_verification": {
+    "status": "positive_report_verified",
+    "portal_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-entry.aspx",
+    "initial_local_access_limits": [
+      "The workspace could not resolve the regulator host for a direct HTTPS request.",
+      "The ChatGPT in-app browser was unavailable in this session."
+    ],
+    "bounded_probe": {
+      "keywords": ["339475"],
+      "sources": ["TGA_DAEN"],
+      "start_date": "2020-12-01",
+      "end_date": "2020-12-31",
+      "max_pages": 20,
+      "max_records": 25,
+      "request_timeout": 15,
+      "source_timeout": 90
+    },
+    "github_actions_result": {
+      "commit": "17c8dcb8434abf5bea9be7e15d2881157551a0c5",
+      "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46138599242/job/140959335422",
+      "checked_at_utc": "2026-11-28T11:11:17Z",
+      "selected_device_count": 6,
+      "effective_start": "2020-12-01",
+      "effective_end": "2020-12-31",
+      "response_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-report.aspx",
+      "content_type": "text/html; charset=utf-8",
+      "portal_report_count": 1,
+      "retrieved_count": 1,
+      "exported_count": 1,
+      "coverage": "complete",
+      "report_number_verified": "67102",
+      "report_date_verified": "2020-12-14",
+      "verified_date_basis": "report_date",
+      "structured_export_integrity_verified": true,
+      "error_count": 0
+    },
+    "scope": "The portal result reconciles the one-report total for this exact December 2020 query. The 15-report historical total uses a broader date range. The positive HTML run did not exercise a second portal page or a live PDF-only response."
+  },
+  "live_pagination_verification": {
+    "status": "live_html_pagination_verified",
+    "historical_range_probe": {
+      "commit": "0cbc9831454161c8bc69d2bdcb305165f7ab7887",
+      "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46138851727/job/140960093021",
+      "checked_at_utc": "2026-11-28T11:14:32Z",
+      "artg_search_term": "339475",
+      "start_date": "2020-01-01",
+      "end_date": "2022-12-31",
+      "requested_page_size": 5,
+      "max_pages": 4,
+      "max_reports": 25,
+      "expected_report_count": 15,
+      "retained_report_count": 15,
+      "reference_report_found": true,
+      "coverage": "complete",
+      "content_type": "text/html; charset=utf-8",
+      "html_report_pages_parsed": [1],
+      "interpretation": "The live endpoint returned all 15 reports on one page. The second-page assertion exited nonzero, while the separate regression suite passed."
+    },
+    "larger_probe": {
+      "artg_search_term": "175422",
+      "artg_reference": "https://www.tga.gov.au/sites/default/files/biomaterials-and-engineering-laboratory-report-non-active-mammary-implants.pdf",
+      "start_date": "2014-01-01",
+      "end_date": "2022-12-31",
+      "budget": {"page_size": 5, "max_pages": 4, "max_reports": 150, "request_timeout_seconds": 15, "step_timeout_minutes": 3},
+      "github_actions_result": {
+        "commit": "4859ec3ca15479758e8d652de72b60d787afc996",
+        "job_url": "https://github.com/WONG1357/AI-pro-search/actions/runs/46139047307/job/140960698275",
+        "checked_at_utc": "2026-11-28T11:16:35Z",
+        "selected_device_count": 19,
+        "effective_start": "2014-01-01",
+        "effective_end": "2022-12-31",
+        "expected_report_count": 69,
+        "retained_report_count": 69,
+        "coverage": "complete",
+        "response_url": "https://apps.tga.gov.au/PROD/DEVICES/daen-report.aspx",
+        "content_type": "text/html; charset=utf-8",
+        "html_report_pages_parsed": [1, 2, 3],
+        "live_pagination_verified": true
+      }
+    }
+  }
+}

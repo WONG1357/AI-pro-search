@@ -1,0 +1,7 @@
+# Reproducible retrieval toolkit for the OpenAI-hosted sandbox (no API key inside).
+pandas==2.2.3
+requests==2.34.2
+beautifulsoup4==4.15.0
+python-dateutil==4.0.0
+openpyxl==3.1.5
+pypdf==6.21.4

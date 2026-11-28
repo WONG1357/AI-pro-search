@@ -34,7 +34,7 @@ CATEGORY_RULES: list[dict[str, object]] = [
             r"\blost\b.{0,40}\bseal\b",
         ],
         "medium": [
-            r"\bseal\b.{0,80}\b(leak|leaks|leaked|leakage)\b",
+            r"\bseal\b.{0,80}\b(leak|leaks|leaked|leaking|leakage)\b",
             r"\b(trocar|port)\b.{0,80}\bseal\b.{0,80}\bproblem\b",
         ],
     },
@@ -97,10 +97,10 @@ CATEGORY_RULES: list[dict[str, object]] = [
     {
         "category": "Trocar Leakage",
         "high": [
-            r"\btrocar\b.{0,100}\b(leak|leaks|leaked|leakage|gas leak|co2 leak|insufflation leak|loss of pneumoperitoneum)\b",
-            r"\bport\b.{0,100}\b(leak|leaks|leaked|leakage|gas leak|co2 leak|insufflation leak)\b",
-            r"\binsufflation\b.{0,100}\b(leak|leaks|leaked|leakage|loss)\b",
-            r"\bco2\b.{0,100}\b(leak|leaks|leaked|leakage|loss)\b",
+            r"\btrocar\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|gas leak|co2 leak|insufflation leak|loss of pneumoperitoneum)\b",
+            r"\bport\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|gas leak|co2 leak|insufflation leak)\b",
+            r"\binsufflation\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|loss)\b",
+            r"\bco2\b.{0,100}\b(leak|leaks|leaked|leaking|leakage|loss)\b",
             r"\bloss of pneumoperitoneum\b",
         ],
         "medium": [
@@ -156,7 +156,7 @@ CATEGORY_RULES: list[dict[str, object]] = [
         ],
     },
     {
-        "category": "Pyramidal tip trocar causes vascular lacerations",
+        "category": "Trocar-associated vascular injury",
         "high": [
             r"\bpyramidal\b.{0,80}\b(tip|trocar)\b.{0,120}\b(vascular|vessel|artery|vein|aorta|iliac)\b.{0,80}\b(laceration|lacerations|injury|injuries|tear|perforation|bleeding)\b",
             r"\b(vascular|vessel|artery|vein|aorta|iliac)\b.{0,80}\b(laceration|lacerations|injury|injuries|tear|perforation|bleeding)\b.{0,120}\bpyramidal\b",
@@ -167,7 +167,7 @@ CATEGORY_RULES: list[dict[str, object]] = [
         ],
     },
     {
-        "category": "Retractable shield trocar design cause serious injuries and deaths",
+        "category": "Injury involving shielded trocar",
         "high": [
             r"\bretractable shield\b.{0,120}\b(trocar|device|design)\b.{0,120}\b(injury|injuries|death|deaths|fatal|fatality|serious)\b",
             r"\bshielded trocar\b.{0,120}\b(injury|injuries|death|deaths|fatal|fatality|serious)\b",
@@ -217,17 +217,14 @@ def classify_incident(text: object | None) -> str:
 
 def classify_incident_details(text: object | None) -> ClassificationResult:
     """Classify incident text and return category confidence metadata."""
-    normalized = normalize_text(text)
+    normalized = _affirmed_text(normalize_text(text))
     if not normalized:
         return ClassificationResult("Unrelated / insufficient detail", "Low", "No classifiable text")
 
-    negated = _matches_any(normalized, NEGATION_PATTERNS)
     packaging_only = bool(re.search(PACKAGING_CONTEXT, normalized)) and not _has_device_malfunction_context(normalized)
 
     for rule in CATEGORY_RULES:
         category = str(rule["category"])
-        if negated and category not in {"incorrect sterilization", "High level of endotoxin on product"}:
-            continue
         high_match = _first_match(normalized, rule.get("high", []))
         if high_match and not (packaging_only and category not in {"incorrect sterilization", "High level of endotoxin on product"}):
             return ClassificationResult(category, "High", high_match)
@@ -235,9 +232,9 @@ def classify_incident_details(text: object | None) -> ClassificationResult:
         if medium_match and not packaging_only:
             return ClassificationResult(category, "Medium", medium_match)
 
-    for rule in OTHER_RULES:
-        if negated and str(rule["category"]) == "Unclassified mechanical issue":
-            continue
+    # An unrelated 'unknown' elsewhere must not hide a positively reported
+    # injury or malfunction.
+    for rule in OTHER_RULES[1:] + OTHER_RULES[:1]:
         match = _first_match(normalized, rule.get("patterns", []))
         if match:
             return ClassificationResult(str(rule["category"]), "Low", match)
@@ -251,25 +248,23 @@ def classify_custom_incident_details(
     accident_terms: list[str] | None = None,
 ) -> ClassificationResult:
     """Classify custom-device records from user-provided components and accident terms."""
-    normalized = normalize_text(text)
+    normalized = _affirmed_text(normalize_text(text))
     if not normalized:
         return ClassificationResult("Unrelated / insufficient detail", "Low", "No classifiable text")
 
     component_matches = _matched_terms(normalized, components or [])
     accident_matches = _matched_terms(normalized, accident_terms or [])
     inferred_accident = _infer_accident_group(normalized)
-    negated = _matches_any(normalized, NEGATION_PATTERNS)
-
-    if component_matches and accident_matches and not negated:
+    if component_matches and accident_matches:
         component = _display_term(component_matches[0])
         accident = _display_term(accident_matches[0])
         return ClassificationResult(f"{component} - {accident} issue", "High", f"Matched component '{component}' and accident term '{accident}'")
 
-    if component_matches and inferred_accident and not negated:
+    if component_matches and inferred_accident:
         component = _display_term(component_matches[0])
         return ClassificationResult(f"{component} - {inferred_accident}", "Medium", f"Matched component '{component}' with inferred accident '{inferred_accident}'")
 
-    if accident_matches and not negated:
+    if accident_matches:
         accident = _display_term(accident_matches[0])
         return ClassificationResult(f"{accident} issue", "Medium", f"Matched accident term '{accident}'")
 
@@ -277,7 +272,7 @@ def classify_custom_incident_details(
         component = _display_term(component_matches[0])
         return ClassificationResult(f"{component} - unspecified issue", "Low", f"Matched component '{component}' without a specific accident term")
 
-    fallback = classify_incident_details(normalized)
+    fallback = classify_incident_details(text)
     if fallback.category.startswith("Unclassified") or fallback.category in {"Sterility / packaging issue", "Unrelated / insufficient detail"}:
         return fallback
     if fallback.category != "Other":
@@ -291,6 +286,41 @@ def _first_match(text: str, patterns: object) -> str | None:
         if match:
             return match.group(0)[:160]
     return None
+
+
+_FINDING = (
+    r"(?:leak\w*|break\w*|broken|broke|fractur\w*|crack\w*|ruptur\w*|separat\w*|"
+    r"detach\w*|dislodg\w*|failur\w*|failed|malfunction\w*|damage\w*|defect\w*|injur\w*|death\w*|died|"
+    r"bleed\w*|hemorrhag\w*|perforat\w*|lacerat\w*|infect\w*|pain|burn\w*|"
+    r"endotoxin(?:\s+contamination)?|pyrogen(?:\s+contamination)?|contamination)"
+)
+
+
+def _affirmed_text(text: str) -> str:
+    """Mask locally negated findings; keep other findings in the same report.
+
+    These remain reviewable rules, not calibrated clinical judgments. Clause
+    boundaries prevent matches from joining unrelated source fields/sentences.
+    """
+    clauses = re.split(r"[.!?;,]+|\b(?:but|however|yet)\b", text)
+    output = []
+    prefix = re.compile(
+        rf"\b(?:no|without|denies|denied|not|never)\b"
+        rf"(?:\s+(?:evidence|signs?|indication|reports?|reported|of|any|a|the|patient|device|product|"
+        rf"was|were|is|be|been|had|has|have|observed|detected|found|experience|experienced|sustain|sustained|"
+        rf"associated|significant|serious|trocar|cannula|obturator|seal|valve|balloon|sleeve|shaft|tip|port)){{0,10}}"
+        rf"\s+\b{_FINDING}\b"
+    )
+    postfix = re.compile(
+        rf"\b{_FINDING}\b\s+(?:(?:was|were|is|has|have|had|did)\s+)?"
+        rf"(?:not|never)\s+(?:(?:been|occurred|occur|observed|found|reported|detected|confirmed)\s*)+"
+    )
+    for clause in clauses:
+        clause = prefix.sub(" ", clause)
+        clause = postfix.sub(" ", clause)
+        if clause.strip():
+            output.append(clause.strip())
+    return "\n".join(output)
 
 
 def _matches_any(text: str, patterns: list[str]) -> bool:
@@ -328,7 +358,7 @@ def _display_term(term: str) -> str:
 def _infer_accident_group(text: str) -> str | None:
     groups = [
         ("crack/break issue", r"\b(broke|broken|break|crack|cracked|fracture|fractured|split|snapped)\w*\b"),
-        ("leakage issue", r"\b(leak|leaks|leaked|leakage|gas leak|fluid leak)\b"),
+        ("leakage issue", r"\b(leak|leaks|leaked|leaking|leakage|gas leak|fluid leak)\b"),
         ("separation/detachment issue", r"\b(separat|detach|detached|dislodged|fell off|came off)\w*\b"),
         ("inflation/deflation issue", r"\b(inflat|deflat|rupture|ruptured|burst)\w*\b"),
         ("removal/deployment difficulty", r"\b(stuck|jammed|difficult|difficulty|unable|could not|would not)\b.{0,80}\b(remove|withdraw|deploy|release|insert)\w*\b"),

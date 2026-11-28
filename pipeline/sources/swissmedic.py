@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 from urllib.parse import urlencode, urljoin
@@ -24,6 +24,7 @@ from pipeline.config import (
 from pipeline.progress import ProgressReporter
 from pipeline.sources.base import BaseSourceConnector, SourceFetchResult, ensure_unified_columns
 from pipeline.utils import format_fda_date, parse_year_from_date
+from pipeline.source_support import request_with_retry, with_coverage
 
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class SwissmedicFscaConnector(BaseSourceConnector):
         **kwargs: Any,
     ) -> SourceFetchResult:
         """Fetch recall records for the requested keywords and years."""
-        config = self.client_config
+        config = replace(self.client_config)
         if kwargs.get("request_timeout"):
             config.timeout = float(kwargs["request_timeout"])
         if kwargs.get("page_size"):
@@ -86,6 +87,7 @@ class SwissmedicFscaConnector(BaseSourceConnector):
                 client_config=config,
                 progress_reporter=progress_reporter,
                 max_pages=int(kwargs["max_pages"]) if kwargs.get("max_pages") else None,
+                max_records=int(kwargs["max_records"]) if kwargs.get("max_records") else None,
                 debug=bool(kwargs.get("debug", False)),
                 session=kwargs.get("session"),
             )
@@ -155,7 +157,7 @@ def fetch_swissmedic_page(
         "sortingProperty": "PUBLICATION_DATE",
         "direction": "DESC",
     }
-    response = session.post(
+    response = request_with_retry(session, "POST",
         client_config.search_url,
         params=params,
         json=payload,
@@ -171,8 +173,6 @@ def fetch_swissmedic_page(
             response.status_code,
             response.text[:1000],
         )
-    if response.status_code >= 400:
-        raise RuntimeError(f"HTTP {response.status_code} for {response.url}: {response.text[:1000]}")
     return response
 
 
@@ -185,15 +185,30 @@ def parse_swissmedic_response(response_or_data: requests.Response | dict[str, An
             raise RuntimeError(f"Swissmedic FSCA returned non-JSON response: {response_or_data.text[:1000]}") from exc
     else:
         data = response_or_data
-    content = data.get("content", [])
+    if not isinstance(data, dict) or data.get("error") or "content" not in data:
+        raise RuntimeError("Swissmedic response has an error or is missing the content array")
+    content = data["content"]
     if not isinstance(content, list):
         raise RuntimeError("Swissmedic FSCA response content was not a list")
+    if any(not isinstance(item, dict) for item in content):
+        raise RuntimeError("Swissmedic result entry is not an object")
+    pagination_verified = all(key in data for key in ("totalElements", "totalPages", "number", "last"))
+    if "last" in data and not isinstance(data["last"], bool):
+        raise RuntimeError("Swissmedic pagination last flag is not boolean")
+    total_elements = int(data.get("totalElements", len(content)))
+    total_pages = int(data.get("totalPages", 1))
+    page_number = int(data.get("number", 0))
+    if total_elements < len(content) or total_elements < 0 or total_pages < 0 or page_number < 0:
+        raise RuntimeError("Swissmedic pagination counts contradict its returned rows")
+    if content and (total_pages == 0 or page_number >= total_pages):
+        raise RuntimeError("Swissmedic page number contradicts the total pages")
     return {
         "content": content,
-        "total_elements": int(data.get("totalElements") or len(content)),
-        "total_pages": int(data.get("totalPages") or 1),
-        "page_number": int(data.get("number") or 0),
+        "total_elements": total_elements,
+        "total_pages": total_pages,
+        "page_number": page_number,
         "last": bool(data.get("last", True)),
+        "pagination_verified": pagination_verified,
     }
 
 
@@ -207,6 +222,7 @@ def fetch_swissmedic_fsca_direct(
     max_pages: int | None = None,
     debug: bool = False,
     session: requests.Session | None = None,
+    max_records: int | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Fetch Swissmedic FSCA recall records with OR keyword semantics."""
     config = client_config or SwissmedicFscaClientConfig()
@@ -218,6 +234,12 @@ def fetch_swissmedic_fsca_direct(
     seen_hashes_by_term: dict[str, set[str]] = {}
     terms = _merge_terms(keywords, None, None)
     total_terms = max(1, len(terms))
+    failures = 0
+    capped = False
+    pagination_unverified = False
+    page_limit = int(max_pages) if max_pages is not None else 100
+    if page_limit < 1 or (max_records is not None and max_records < 1):
+        raise ValueError("Swissmedic retrieval limits must be positive")
 
     if progress_reporter:
         progress_reporter.update_source(
@@ -230,26 +252,56 @@ def fetch_swissmedic_fsca_direct(
         )
 
     for term_index, keyword in enumerate(terms or [""], start=1):
+        if max_records and len(records) >= max_records:
+            capped = True
+            break
         page = 0
+        fetched_for_term = 0
+        expected_for_term: int | None = None
         term_hashes = seen_hashes_by_term.setdefault(keyword.lower(), set())
         while True:
-            response = fetch_swissmedic_page(keyword, page, start_date, end_date, session, config, debug=debug)
-            page_hash = hashlib.sha256(response.content).hexdigest()
+            try:
+                response = fetch_swissmedic_page(keyword, page, start_date, end_date, session, config, debug=debug)
+                parsed = parse_swissmedic_response(response)
+                if parsed["pagination_verified"] and parsed["page_number"] != page:
+                    raise RuntimeError("Swissmedic returned an unexpected page number")
+                if parsed["pagination_verified"]:
+                    if expected_for_term is not None and parsed["total_elements"] != expected_for_term:
+                        raise RuntimeError("Swissmedic total changed during pagination")
+                    if fetched_for_term + len(parsed["content"]) > parsed["total_elements"]:
+                        raise RuntimeError("Swissmedic total contradicts the paginated rows")
+                    expected_for_term = parsed["total_elements"]
+            except (requests.RequestException, RuntimeError, ValueError, TypeError) as exc:
+                failures += 1
+                warnings.append(f"Swissmedic keyword={keyword} page={page} failed: {type(exc).__name__}: {exc}")
+                break
+            page_hash = hashlib.sha256(json.dumps(parsed["content"], sort_keys=True).encode()).hexdigest()
             if page_hash in term_hashes:
+                failures += 1
                 warnings.append(f"Repeated Swissmedic response for keyword={keyword} page={page}; stopped pagination")
                 break
             term_hashes.add(page_hash)
-            parsed = parse_swissmedic_response(response)
+            pagination_unverified = pagination_unverified or not parsed["pagination_verified"]
             page_records = parsed["content"]
+            fetched_for_term += len(page_records)
             new_count = 0
             for raw in page_records:
-                normalized = normalize_swissmedic_record(
-                    raw,
-                    config,
-                    search_link=build_swissmedic_search_link(keyword, start_date, end_date),
-                )
+                try:
+                    normalized = normalize_swissmedic_record(
+                        raw, config, search_link=build_swissmedic_search_link(keyword, start_date, end_date),
+                    )
+                except (AttributeError, TypeError, ValueError) as exc:
+                    failures += 1
+                    warnings.append(f"Swissmedic malformed record could not be normalized: {type(exc).__name__}")
+                    continue
                 normalized["source_query_match"] = True
                 key = normalized["event_id"]
+                if not key:
+                    key = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
+                    normalized["event_id"] = key
+                    normalized["report_number"] = key
+                    pagination_unverified = True
+                    warnings.append("Swissmedic record without reference retained with content identity")
                 if key not in seen:
                     records.append(normalized)
                     seen.add(key)
@@ -265,18 +317,31 @@ def fetch_swissmedic_fsca_direct(
                     message=f"keyword={keyword} page={page + 1}/{parsed['total_pages']} fetched={len(page_records)} new={new_count}",
                 )
 
+            if max_records and len(records) > max_records:
+                records = records[:max_records]
+                capped = True
+                break
             if parsed["last"] or page + 1 >= parsed["total_pages"]:
+                if parsed["pagination_verified"] and fetched_for_term < parsed["total_elements"]:
+                    failures += 1
+                    warnings.append(f"Swissmedic keyword={keyword} ended before its reported total")
                 break
-            if max_pages and page + 1 >= max_pages:
-                warnings.append(f"Stopped at max_pages={max_pages} for keyword={keyword}")
+            if page + 1 >= page_limit or (max_records and len(records) >= max_records):
+                capped = True
+                warnings.append(f"Swissmedic retrieval capped: max_pages={page_limit}, max_records={max_records}")
                 break
-            if not page_records or new_count == 0:
+            if not page_records:
+                failures += 1
+                warnings.append("Swissmedic returned an empty page before pagination finished")
                 break
             page += 1
 
     df = ensure_unified_columns(pd.DataFrame(records))
     warnings.append(f"swissmedic_fsca_records={len(df)}")
-    return df, warnings
+    coverage = "failed" if failures and not records else "partial" if failures or capped else "unverified" if pagination_unverified else "complete"
+    if capped and not any("capped" in warning for warning in warnings):
+        warnings.append(f"Swissmedic retrieval capped at max_records={max_records}")
+    return with_coverage(df, coverage, warnings), warnings
 
 
 def normalize_swissmedic_record(
@@ -314,6 +379,7 @@ def normalize_swissmedic_record(
     source_specific = {
         "swissmedic_ref": ref,
         "publication_date": publication_date,
+        "date_basis": "publication_date",
         "status": raw.get("status"),
         "status_date": format_fda_date(raw.get("statusDatum")),
         "reason": raw.get("begruendung"),
@@ -329,10 +395,13 @@ def normalize_swissmedic_record(
         "event_id": ref,
         "report_number": ref,
         "date_of_event": "",
-        "date_received": publication_date,
-        "event_date": publication_date,
+        "date_received": "",
+        "report_date": publication_date,
+        "event_date": "",
+        "search_date": publication_date,
+        "search_date_basis": "publication_date" if publication_date else "unknown",
         "year": parse_year_from_date(publication_date),
-        "received_year": parse_year_from_date(publication_date),
+        "received_year": None,
         "country": COUNTRY,
         "manufacturer": str(raw.get("hersteller") or "").strip(),
         "product_name": "; ".join(device_names),
@@ -404,7 +473,7 @@ def _record_hash(record: dict[str, Any]) -> str:
         [
             str(record.get("source", "")),
             str(record.get("event_id", "")),
-            str(record.get("event_date", "")),
+            str(record.get("search_date", "")),
             str(record.get("manufacturer", "")),
             str(record.get("product_name", ""))[:300],
         ]
